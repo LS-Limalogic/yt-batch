@@ -2,19 +2,21 @@ import sys
 import subprocess
 import shutil
 import argparse
+import os
 from pathlib import Path
 
-# Linusowa zasada: Fail fast. Sprawdzamy zależności na starcie.
+# Lista wymaganych narzędzi
 REQUIRED_TOOLS = ["yt-dlp", "demucs", "ffmpeg"]
-for tool in REQUIRED_TOOLS:
-    if not shutil.which(tool):
-        print(f"Błąd krytyczny: Nie znaleziono narzędzia '{tool}' w PATH.")
-        sys.exit(1)
+
+def check_dependencies():
+    for tool in REQUIRED_TOOLS:
+        if not shutil.which(tool):
+            print(f"Błąd krytyczny: Nie znaleziono narzędzia '{tool}' w PATH.")
+            sys.exit(1)
 
 def run_command(cmd, verbose=False):
-    """Wrapper na subprocess, żeby kod był czystszy."""
+    """Wrapper na subprocess."""
     try:
-        # Jeśli verbose=True, pozwalamy na wyjście na ekran (np. pasek postępu yt-dlp)
         stdout_setting = None if verbose else subprocess.PIPE
         result = subprocess.run(
             cmd, 
@@ -25,28 +27,29 @@ def run_command(cmd, verbose=False):
         )
         return result.stdout.strip() if result.stdout else ""
     except subprocess.CalledProcessError as e:
-        print(f"\n[BŁĄD] Komenda nie powiodła się: {' '.join(cmd)}")
-        if e.stderr:
-            print(f"Szczegóły: {e.stderr}")
+        if not verbose and e.stderr:
+            print(f"Szczegóły błędu: {e.stderr}")
         raise e
 
-def process_item(query, index, total):
-    """Przetwarza pojedynczy wpis (URL lub frazę)."""
+def process_item(query, index, total, args):
+    """
+    Główna logika przetwarzania pojedynczego utworu.
+    Teraz przyjmuje obiekt 'args' z konfiguracją.
+    """
     
-    # Logika detekcji: Jeśli to nie URL, używamy ytsearch1:
+    # Detekcja URL vs Fraza
     if not query.startswith(("http://", "https://")):
-        print(f"\n[{index}/{total}] Tryb wyszukiwania dla frazy: '{query}'")
+        print(f"\n[{index}/{total}] Szukam: '{query}'")
         dl_source = f"ytsearch1:{query}"
     else:
-        print(f"\n[{index}/{total}] Tryb bezpośredniego linku: {query}")
+        print(f"\n[{index}/{total}] Link: {query}")
         dl_source = query
 
-    # 1. Pobieranie nazwy i pliku (yt-dlp)
-    # Łączymy pobieranie nazwy i pliku w logiczną całość, aby uniknąć race conditions
-    print(">>> Pobieranie źródła...")
-    
+    print(f"   [Opcje] Bitrate: {args.quality}k | Model: {args.model} | Shifts: {args.shifts}")
+
+    # 1. Pobieranie (yt-dlp)
     try:
-        # Najpierw pobieramy nazwę pliku, jaka powstanie
+        # Najpierw ustalamy nazwę
         get_name_cmd = [
             "yt-dlp",
             "--get-filename",
@@ -59,89 +62,113 @@ def process_item(query, index, total):
         base_name = Path(filename).stem
         input_mp3 = f"{base_name}.mp3"
         
-        # Właściwe pobieranie
-        download_cmd = [
-            "yt-dlp",
-            "-x", "--audio-format", "mp3",
-            "-f", "bestaudio",
-            "-o", "%(title)s.%(ext)s",
-            "--restrict-filenames",
-            dl_source
-        ]
-        run_command(download_cmd, verbose=True)
+        # Jeśli plik już istnieje, pomijamy pobieranie (cache)
+        if not Path(input_mp3).exists():
+            print(">>> Pobieranie źródła...")
+            download_cmd = [
+                "yt-dlp",
+                "-x", "--audio-format", "mp3",
+                "-f", "bestaudio",
+                "--audio-quality", "0", # Pobieramy w najlepszej możliwej jakości
+                "-o", "%(title)s.%(ext)s",
+                "--restrict-filenames",
+                dl_source
+            ]
+            run_command(download_cmd, verbose=True)
+        else:
+            print(">>> Plik źródłowy już istnieje, pomijam pobieranie.")
         
     except Exception:
-        print(f"[POMINIĘTO] Nie udało się pobrać: {query}")
+        print(f"[POMINIĘTO] Problem z pobraniem: {query}")
         return
 
     # 2. Separacja (Demucs)
-    print(f">>> Separacja wokal/instrumental: {input_mp3}")
+    print(f">>> Separacja ({args.model})...")
     try:
         demucs_cmd = [
             "demucs",
-            "-n", "htdemucs",
+            "-n", args.model,          # Wybór modelu
+            "--shifts", str(args.shifts), # Ilość przesunięć (jakość vs czas)
             "--two-stems=vocals",
             "--mp3",
-            "--mp3-bitrate", "320",
+            "--mp3-bitrate", str(args.quality), # Bitrate wyjściowy
             input_mp3
         ]
-        # To może potrwać, więc verbose=True
         run_command(demucs_cmd, verbose=True)
     except Exception:
         print(f"[BŁĄD] Demucs zawiódł dla pliku: {input_mp3}")
         return
 
-    # 3. Finalizacja
-    source_stem_path = Path("separated") / "htdemucs" / base_name / "no_vocals.mp3"
+    # 3. Finalizacja i Sprzątanie
+    source_stem_path = Path("separated") / args.model / base_name / "no_vocals.mp3"
     final_output = Path(f"no-vocals-{input_mp3}")
 
     if source_stem_path.exists():
+        # Przeniesienie pliku wynikowego
         shutil.move(str(source_stem_path), str(final_output))
-        print(f">>> SUKCES: {final_output}")
+        print(f">>> GOTOWE: {final_output}")
         
-        # Sprzątanie
+        # Sprzątanie folderu demucs
         shutil.rmtree("separated", ignore_errors=True)
-        if Path(input_mp3).exists():
-            Path(input_mp3).unlink() # Usuwamy oryginał z wokalem
+        
+        # Obsługa flagi --keep-original
+        if args.keep_original:
+            print(f">>> Zachowano oryginał: {input_mp3}")
+        else:
+            if Path(input_mp3).exists():
+                Path(input_mp3).unlink()
+                print(">>> Usunięto plik źródłowy (z wokalem).")
     else:
-        print(f"[BŁĄD] Nie znaleziono pliku wynikowego dla {base_name}")
+        print(f"[BŁĄD] Nie znaleziono pliku wynikowego w {source_stem_path}")
 
 def main():
-    parser = argparse.ArgumentParser(description="Batch Instrumental Extractor by Linus")
-    parser.add_argument("-i", "--input", help="Plik tekstowy z listą (jedna fraza/link na linię)")
-    parser.add_argument("query", nargs="*", help="Pojedyncze frazy lub linki podane w argumentach")
+    check_dependencies()
+
+    parser = argparse.ArgumentParser(description="Advanced Instrumental Extractor v2.0")
     
+    # Argumenty wejściowe
+    parser.add_argument("-i", "--input", help="Plik tekstowy z listą utworów")
+    parser.add_argument("query", nargs="*", help="Frazy lub linki bezpośrednie")
+    
+    # Nowe flagi konfiguracyjne
+    parser.add_argument("-k", "--keep-original", action="store_true", 
+                        help="Zachowaj oryginalny plik mp3 z wokalem (domyślnie: usuń)")
+    
+    parser.add_argument("-q", "--quality", type=int, default=192, 
+                        help="Bitrate pliku wyjściowego w kbps (domyślnie: 192)")
+    
+    parser.add_argument("-m", "--model", type=str, default="htdemucs", 
+                        help="Model Demucs: htdemucs, htdemucs_ft, mdx, mdx_extra (domyślnie: htdemucs)")
+    
+    parser.add_argument("-s", "--shifts", type=int, default=1, 
+                        help="Liczba przesunięć dla poprawy jakości (1=szybko, 2+=lepiej). Domyślnie: 1")
+
     args = parser.parse_args()
 
+    # Budowanie kolejki
     queue = []
-
-    # Czytanie z pliku
     if args.input:
-        input_path = Path(args.input)
-        if input_path.exists():
-            with open(input_path, 'r', encoding='utf-8') as f:
+        if Path(args.input).exists():
+            with open(args.input, 'r', encoding='utf-8') as f:
                 queue.extend([line.strip() for line in f if line.strip()])
         else:
-            print(f"Błąd: Plik {args.input} nie istnieje.")
+            print(f"Błąd: Nie znaleziono pliku {args.input}")
             sys.exit(1)
-
-    # Czytanie z argumentów CLI
+            
     if args.query:
         queue.extend(args.query)
 
     if not queue:
-        print("Nie podano żadnych danych wejściowych. Użyj pliku (-i) lub argumentów.")
-        print("Przykład: python3 batch_stem.py 'Metallica Enter Sandman' 'https://youtu.be/...'")
+        print("Brak danych wejściowych. Użyj -h aby zobaczyć pomoc.")
         sys.exit(1)
 
-    total_items = len(queue)
-    print(f"--- Rozpoczynam przetwarzanie wsadowe: {total_items} pozycji ---\n")
+    # Info o konfiguracji
+    total = len(queue)
+    print(f"--- Start v2.0 | Kolejka: {total} | Jakość: {args.quality}kbps | Keep: {args.keep_original} ---")
 
     for idx, item in enumerate(queue, 1):
-        process_item(item, idx, total_items)
-        print("-" * 40)
-
-    print("\nZakończono przetwarzanie wsadowe.")
+        process_item(item, idx, total, args)
+        print("-" * 50)
 
 if __name__ == "__main__":
     main()
