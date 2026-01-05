@@ -1,0 +1,27 @@
+services:
+    audio-extractor:
+        build: .
+        container_name: audio_extractor
+        volumes:
+            # 1. Mapujemy folder wyjściowy (to już mieliśmy)
+            - ./output:/app/output
+
+            # 2. TO JEST KLUCZ: Mapujemy skrypt z hosta do kontenera
+            # Dzięki temu kontener zawsze widzi aktualną wersję pliku z Twojego dysku
+            - ./yt-batch.py:/app/yt-batch.py
+
+            # Opcjonalnie: lista plików
+            - ./links.txt:/app/links.txt
+
+        working_dir: /app
+        # Uwaga: command można nadpisać przy uruchomieniu:
+        # docker-compose run audio-extractor "Nazwa Utworu"
+        # docker-compose run audio-extractor -i links.txt
+        # Opcjonalnie: Jeśli masz kartę NVIDIA na Proxmox i drivery na hoście
+        # deploy:
+        #   resources:
+        #     reservations:
+        #       devices:
+        #         - driver: nvidia
+        #           count: 1
+        #           capabilities: [gpu]
