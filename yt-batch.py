@@ -2,11 +2,18 @@ import sys
 import subprocess
 import shutil
 import argparse
-import os
 from pathlib import Path
 
-# Lista wymaganych narzędzi
+# --- KONFIGURACJA ---
 REQUIRED_TOOLS = ["yt-dlp", "demucs", "ffmpeg"]
+
+# Aliasy dla modeli - upraszczamy UX
+MODEL_MAP = {
+    "1": "htdemucs",        # Standard (Szybki, dobra jakość)
+    "2": "htdemucs_ft",     # Fine-Tuned (Lepsza separacja, ten sam czas)
+    "3": "mdx_extra_q",     # MDX Quantized (Klasyk, inny algorytm)
+    "4": "mdx_extra"        # MDX Extra (Najcięższy, bardzo dokładny)
+}
 
 def check_dependencies():
     for tool in REQUIRED_TOOLS:
@@ -15,7 +22,6 @@ def check_dependencies():
             sys.exit(1)
 
 def run_command(cmd, verbose=False):
-    """Wrapper na subprocess."""
     try:
         stdout_setting = None if verbose else subprocess.PIPE
         result = subprocess.run(
@@ -28,146 +34,116 @@ def run_command(cmd, verbose=False):
         return result.stdout.strip() if result.stdout else ""
     except subprocess.CalledProcessError as e:
         if not verbose and e.stderr:
-            print(f"Szczegóły błędu: {e.stderr}")
+            print(f"[ERROR DETAILS] {e.stderr}")
         raise e
 
-def process_item(query, index, total, args):
-    """
-    Główna logika przetwarzania pojedynczego utworu.
-    Teraz przyjmuje obiekt 'args' z konfiguracją.
-    """
-    
-    # Detekcja URL vs Fraza
+def resolve_model(model_arg):
+    """Zamienia '1' na 'htdemucs' lub zwraca oryginalną nazwę."""
+    return MODEL_MAP.get(str(model_arg), model_arg)
+
+def process_item(query, index, total, args, output_dir):
+    # Logika źródła
     if not query.startswith(("http://", "https://")):
         print(f"\n[{index}/{total}] Szukam: '{query}'")
         dl_source = f"ytsearch1:{query}"
     else:
-        print(f"\n[{index}/{total}] Link: {query}")
+        print(f"\n[{index}/{total}] URL: {query}")
         dl_source = query
 
-    print(f"   [Opcje] Bitrate: {args.quality}k | Model: {args.model} | Shifts: {args.shifts}")
+    selected_model = resolve_model(args.model)
+    print(f"   [Config] Model: {selected_model} | Bitrate: {args.quality}k | Output: {output_dir}")
 
     # 1. Pobieranie (yt-dlp)
     try:
-        # Najpierw ustalamy nazwę
-        get_name_cmd = [
-            "yt-dlp",
-            "--get-filename",
-            "-o", "%(title)s.%(ext)s",
-            "--restrict-filenames",
-            "-x", "--audio-format", "mp3",
-            dl_source
+        # Pobieramy nazwę
+        name_cmd = [
+            "yt-dlp", "--get-filename", "-o", "%(title)s.%(ext)s",
+            "--restrict-filenames", "-x", "--audio-format", "mp3", dl_source
         ]
-        filename = run_command(get_name_cmd)
+        filename = run_command(name_cmd)
         base_name = Path(filename).stem
-        input_mp3 = f"{base_name}.mp3"
-        
-        # Jeśli plik już istnieje, pomijamy pobieranie (cache)
-        if not Path(input_mp3).exists():
-            print(">>> Pobieranie źródła...")
-            download_cmd = [
-                "yt-dlp",
-                "-x", "--audio-format", "mp3",
-                "-f", "bestaudio",
-                "--audio-quality", "0", # Pobieramy w najlepszej możliwej jakości
-                "-o", "%(title)s.%(ext)s",
-                "--restrict-filenames",
-                dl_source
+        input_mp3 = Path(f"{base_name}.mp3") # Plik tymczasowy w root
+
+        if not input_mp3.exists():
+            print(">>> Pobieranie...")
+            dl_cmd = [
+                "yt-dlp", "-x", "--audio-format", "mp3", "-f", "bestaudio",
+                "--audio-quality", "0",
+                "-o", "%(title)s.%(ext)s", "--restrict-filenames", dl_source
             ]
-            run_command(download_cmd, verbose=True)
-        else:
-            print(">>> Plik źródłowy już istnieje, pomijam pobieranie.")
+            run_command(dl_cmd, verbose=True)
         
     except Exception:
-        print(f"[POMINIĘTO] Problem z pobraniem: {query}")
+        print(f"[SKIP] Błąd pobierania: {query}")
         return
 
     # 2. Separacja (Demucs)
-    print(f">>> Separacja ({args.model})...")
+    print(f">>> Separacja...")
     try:
         demucs_cmd = [
-            "demucs",
-            "-n", args.model,          # Wybór modelu
-            "--shifts", str(args.shifts), # Ilość przesunięć (jakość vs czas)
-            "--two-stems=vocals",
-            "--mp3",
-            "--mp3-bitrate", str(args.quality), # Bitrate wyjściowy
-            input_mp3
+            "demucs", "-n", selected_model,
+            "--shifts", str(args.shifts),
+            "--two-stems=vocals", "--mp3", "--mp3-bitrate", str(args.quality),
+            str(input_mp3)
         ]
         run_command(demucs_cmd, verbose=True)
     except Exception:
-        print(f"[BŁĄD] Demucs zawiódł dla pliku: {input_mp3}")
+        print(f"[FAIL] Błąd Demucs dla: {input_mp3}")
         return
 
-    # 3. Finalizacja i Sprzątanie
-    source_stem_path = Path("separated") / args.model / base_name / "no_vocals.mp3"
-    final_output = Path(f"no-vocals-{input_mp3}")
+    # 3. Finalizacja
+    # Demucs tworzy: separated/<model>/<track>/no_vocals.mp3
+    source_stem = Path("separated") / selected_model / base_name / "no_vocals.mp3"
+    
+    # Przenosimy do folderu output
+    dest_file = output_dir / f"no-vocals-{input_mp3.name}"
 
-    if source_stem_path.exists():
-        # Przeniesienie pliku wynikowego
-        shutil.move(str(source_stem_path), str(final_output))
-        print(f">>> GOTOWE: {final_output}")
+    if source_stem.exists():
+        shutil.move(str(source_stem), str(dest_file))
+        print(f">>> OK: {dest_file}")
         
-        # Sprzątanie folderu demucs
+        # Sprzątanie
         shutil.rmtree("separated", ignore_errors=True)
-        
-        # Obsługa flagi --keep-original
-        if args.keep_original:
-            print(f">>> Zachowano oryginał: {input_mp3}")
-        else:
-            if Path(input_mp3).exists():
-                Path(input_mp3).unlink()
-                print(">>> Usunięto plik źródłowy (z wokalem).")
+        if not args.keep_original and input_mp3.exists():
+            input_mp3.unlink()
     else:
-        print(f"[BŁĄD] Nie znaleziono pliku wynikowego w {source_stem_path}")
+        print(f"[FAIL] Nie znaleziono wyniku w: {source_stem}")
 
 def main():
     check_dependencies()
-
-    parser = argparse.ArgumentParser(description="Advanced Instrumental Extractor v2.0")
+    parser = argparse.ArgumentParser(description="Linus Audio Extractor v3.0")
     
-    # Argumenty wejściowe
-    parser.add_argument("-i", "--input", help="Plik tekstowy z listą utworów")
-    parser.add_argument("query", nargs="*", help="Frazy lub linki bezpośrednie")
+    parser.add_argument("-i", "--input", help="Plik z listą utworów")
+    parser.add_argument("query", nargs="*", help="Frazy/Linki")
     
-    # Nowe flagi konfiguracyjne
-    parser.add_argument("-k", "--keep-original", action="store_true", 
-                        help="Zachowaj oryginalny plik mp3 z wokalem (domyślnie: usuń)")
+    # Nowe/Zmienione flagi
+    parser.add_argument("-m", "--model", default="1", 
+                        help="Wybór modelu: 1=htdemucs(std), 2=htdemucs_ft(hq), 3=mdx_q, 4=mdx_extra. Domyślnie: 1")
+    parser.add_argument("-o", "--outdir", default="output", 
+                        help="Katalog wyjściowy (Domyślnie: ./output)")
     
-    parser.add_argument("-q", "--quality", type=int, default=192, 
-                        help="Bitrate pliku wyjściowego w kbps (domyślnie: 192)")
-    
-    parser.add_argument("-m", "--model", type=str, default="htdemucs", 
-                        help="Model Demucs: htdemucs, htdemucs_ft, mdx, mdx_extra (domyślnie: htdemucs)")
-    
-    parser.add_argument("-s", "--shifts", type=int, default=1, 
-                        help="Liczba przesunięć dla poprawy jakości (1=szybko, 2+=lepiej). Domyślnie: 1")
+    parser.add_argument("-q", "--quality", type=int, default=192, help="Bitrate (kbps)")
+    parser.add_argument("-s", "--shifts", type=int, default=1, help="Passes (1-5)")
+    parser.add_argument("-k", "--keep-original", action="store_true", help="Zachowaj source mp3")
 
     args = parser.parse_args()
 
-    # Budowanie kolejki
+    # Przygotowanie katalogu output
+    out_path = Path(args.outdir)
+    out_path.mkdir(parents=True, exist_ok=True)
+
     queue = []
-    if args.input:
-        if Path(args.input).exists():
-            with open(args.input, 'r', encoding='utf-8') as f:
-                queue.extend([line.strip() for line in f if line.strip()])
-        else:
-            print(f"Błąd: Nie znaleziono pliku {args.input}")
-            sys.exit(1)
-            
-    if args.query:
-        queue.extend(args.query)
+    if args.input and Path(args.input).exists():
+        with open(args.input) as f: queue.extend([l.strip() for l in f if l.strip()])
+    if args.query: queue.extend(args.query)
 
     if not queue:
-        print("Brak danych wejściowych. Użyj -h aby zobaczyć pomoc.")
+        print("Brak danych wejściowych.")
         sys.exit(1)
 
-    # Info o konfiguracji
-    total = len(queue)
-    print(f"--- Start v2.0 | Kolejka: {total} | Jakość: {args.quality}kbps | Keep: {args.keep_original} ---")
-
+    print(f"--- Start v3.0 | Kolejka: {len(queue)} | Output: {out_path} ---")
     for idx, item in enumerate(queue, 1):
-        process_item(item, idx, total, args)
+        process_item(item, idx, len(queue), args, out_path)
         print("-" * 50)
 
 if __name__ == "__main__":
