@@ -10,8 +10,8 @@ services:
             # Dzięki temu kontener zawsze widzi aktualną wersję pliku z Twojego dysku
             - ./yt-batch.py:/app/yt-batch.py
 
-            # Opcjonalnie: lista plików
-            - ./links.txt:/app/links.txt
+            # 3. Cache modeli (Persistent Storage)
+            - ./demucs_models:/root/.cache/torch
 
         working_dir: /app
         # Uwaga: command można nadpisać przy uruchomieniu:
