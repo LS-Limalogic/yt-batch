@@ -18,10 +18,10 @@ services:
         # docker-compose run audio-extractor "Nazwa Utworu"
         # docker-compose run audio-extractor -i links.txt
         # Opcjonalnie: Jeśli masz kartę NVIDIA na Proxmox i drivery na hoście
-        # deploy:
-        #   resources:
-        #     reservations:
-        #       devices:
-        #         - driver: nvidia
-        #           count: 1
-        #           capabilities: [gpu]
+        deploy:
+          resources:
+            reservations:
+              devices:
+                - driver: nvidia
+                  count: 1
+                  capabilities: [gpu]
