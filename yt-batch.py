@@ -3,6 +3,7 @@ import subprocess
 import shutil
 import argparse
 import signal
+import json
 from pathlib import Path
 
 # --- KONFIGURACJA GLOBALNA ---
@@ -14,6 +15,11 @@ MODEL_MAP = {
     "2": "htdemucs_ft",     # High Quality
     "3": "mdx_extra_q",     # MDX Quantized
     "4": "mdx_extra"        # MDX Full
+}
+
+SOURCE_MAP = {
+    "ytm": "ytmusicsearch1",   # YouTube Music (default)
+    "yt":  "ytsearch1",        # YouTube
 }
 
 # Wspólne flagi dla yt-dlp (DRY)
@@ -69,11 +75,50 @@ def run_command(cmd, verbose=False):
 def resolve_model(model_arg):
     return MODEL_MAP.get(str(model_arg), model_arg)
 
+def resolve_album_tracks(album_query, source):
+    """Wyszukaj album i zwróć listę URL-i do wszystkich utworów."""
+    search_prefix = SOURCE_MAP.get(source, "ytmusicsearch1")
+    search_term = f"{search_prefix}:{album_query}"
+
+    # Krok 1: Znajdź pierwszy wynik i pobierz metadane JSON
+    print(f"   >>> Szukam albumu: '{album_query}' ({source})...")
+    try:
+        meta_cmd = ["yt-dlp", "-j", "--no-download", search_term]
+        meta_json = run_command(meta_cmd)
+        meta = json.loads(meta_json)
+    except Exception as e:
+        print(f"[ERROR] Nie udało się znaleźć albumu: {e}")
+        return []
+
+    # Krok 2: Szukamy playlist_id (album na YT Music = playlist OLAK5uy_...)
+    playlist_id = meta.get("playlist_id") or meta.get("playlist")
+    album_name = meta.get("album", album_query)
+
+    if not playlist_id:
+        print(f"[ERROR] Nie znaleziono playlisty albumu dla: '{album_query}'")
+        print("Spróbuj podać dokładniejszą nazwę albumu lub URL playlisty.")
+        return []
+
+    playlist_url = f"https://music.youtube.com/playlist?list={playlist_id}"
+    print(f"   >>> Znaleziono album: '{album_name}' -> {playlist_url}")
+
+    # Krok 3: Pobierz URL-e wszystkich utworów z playlisty
+    try:
+        tracks_cmd = ["yt-dlp", "--flat-playlist", "--print", "url", playlist_url]
+        tracks_output = run_command(tracks_cmd)
+        urls = [u.strip() for u in tracks_output.split('\n') if u.strip()]
+        print(f"   >>> Znaleziono {len(urls)} utworów w albumie")
+        return urls
+    except Exception as e:
+        print(f"[ERROR] Nie udało się pobrać listy utworów z albumu: {e}")
+        return []
+
 def process_item(query, index, total, args, output_dir):
     # Logika detekcji źródła
+    search_prefix = SOURCE_MAP.get(args.source, "ytmusicsearch1")
     if not query.startswith(("http://", "https://")):
-        print(f"\n[{index}/{total}] Wyszukiwanie: '{query}'")
-        dl_source = f"ytsearch1:{query}"
+        print(f"\n[{index}/{total}] Wyszukiwanie ({args.source}): '{query}'")
+        dl_source = f"{search_prefix}:{query}"
     else:
         print(f"\n[{index}/{total}] URL: {query}")
         dl_source = query
@@ -88,7 +133,7 @@ def process_item(query, index, total, args, output_dir):
         input_mp3 = Path(f"{base_name}.mp3")
         
         # Sprawdzenie czy wynik już istnieje w output
-        final_dest = output_dir / f"no-vocals-{input_mp3.name}"
+        final_dest = output_dir / f"{base_name}-no-vocals.mp3"
         if final_dest.exists():
             print(f">>> [SKIP] Plik docelowy już istnieje: {final_dest.name}")
             return
@@ -170,6 +215,8 @@ def main():
     parser.add_argument("-q", "--quality", type=int, default=192, help="Bitrate (kbps)")
     parser.add_argument("-s", "--shifts", type=int, default=1, choices=[1, 2, 3, 4, 5], help="Passes (1-5)")
     parser.add_argument("-k", "--keep-original", action="store_true", help="Nie usuwaj pliku źródłowego")
+    parser.add_argument("-a", "--album", action="append", help="Nazwa albumu (pobierz wszystkie utwory). Można podać wielokrotnie.")
+    parser.add_argument("--source", default="ytm", choices=["ytm", "yt"], help="Źródło wyszukiwania: ytm=YouTube Music (domyślne), yt=YouTube")
 
     args = parser.parse_args()
 
@@ -195,6 +242,12 @@ def main():
 
     if args.query:
         queue.extend(args.query)
+
+    # Rozwiązywanie albumów -> lista URL-i
+    if args.album:
+        for album_name in args.album:
+            track_urls = resolve_album_tracks(album_name, args.source)
+            queue.extend(track_urls)
 
     if not queue:
         parser.print_help()
