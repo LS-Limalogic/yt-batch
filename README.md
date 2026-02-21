@@ -35,7 +35,7 @@ brew install ffmpeg
 Podstawowe wywołanie (szuka na YT, pobiera, separuje, zapisuje w ./output):
 
 ```bash
-python3 batch_stem_v3.py "Nazwa Utworu"
+python3 yt-batch.py "Nazwa Utworu"
 ```
 
 ## Flagi i Parametry
@@ -48,6 +48,8 @@ python3 batch_stem_v3.py "Nazwa Utworu"
 | `--shifts`        | `-s`  | Liczba przesunięć (1=szybko, 2+=jakość) | 1         |
 | `--keep-original` | `-k`  | Zachowaj oryginalny plik z wokalem      | False     |
 | `--input`         | `-i`  | Plik .txt z listą linków/fraz           | -         |
+| `--album`         | `-a`  | Nazwa albumu (pobiera wszystkie utwory). Można podać wielokrotnie. | -         |
+| `--source`        |       | Źródło wyszukiwania: `ytm`=YouTube Music, `yt`=YouTube | ytm       |
 
 ## Mapa Modeli (-m)
 
@@ -61,7 +63,7 @@ python3 batch_stem_v3.py "Nazwa Utworu"
 Skrypt automatycznie zarządza plikami tymczasowymi. Finalny plik ląduje w:
 
 ```
-/output/no-vocals-Nazwa_Piosenki.mp3
+/output/Nazwa_Piosenki-no-vocals.mp3
 ```
 
 ## 🐛 Rozwiązywanie problemów
