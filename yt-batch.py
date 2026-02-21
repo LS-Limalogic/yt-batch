@@ -78,6 +78,18 @@ def run_command(cmd, verbose=False):
 def resolve_model(model_arg):
     return MODEL_MAP.get(str(model_arg), model_arg)
 
+
+def get_demucs_device():
+    """Zwraca 'mps' na Apple Silicon gdy dostępne, None = domyślny (cuda/cpu)."""
+    try:
+        import torch
+        if torch.backends.mps.is_available() and torch.backends.mps.is_built():
+            return "mps"
+    except Exception:
+        pass
+    return None
+
+
 def resolve_album_tracks(album_query, source):
     """Wyszukaj album i zwróć listę URL-i do wszystkich utworów."""
     search_prefix = SOURCE_MAP.get(source, "ytmusicsearch1")
@@ -132,6 +144,7 @@ def process_local_file(input_path, index, total, args, output_dir):
         return
 
     # Separacja (Demucs)
+    device = get_demucs_device()
     print(f"   >>> Separacja (Model: {selected_model}, Shifts: {args.shifts})...")
     try:
         demucs_cmd = [
@@ -143,6 +156,8 @@ def process_local_file(input_path, index, total, args, output_dir):
             "--mp3-bitrate", str(args.quality),
             str(input_path.absolute())
         ]
+        if device:
+            demucs_cmd = ["demucs", "-d", device] + demucs_cmd[1:]
         run_command(demucs_cmd, verbose=True)
     except Exception as e:
         print(f"[FAIL] Demucs crashed: {e}")
@@ -213,17 +228,20 @@ def process_item(query, index, total, args, output_dir):
         print("   >>> Używam lokalnego pliku źródłowego (cache).")
 
     # 3. Separacja (Demucs)
+    device = get_demucs_device()
     print(f"   >>> Separacja (Model: {selected_model}, Shifts: {args.shifts})...")
     try:
         demucs_cmd = [
-            "demucs", 
+            "demucs",
             "-n", selected_model,
             "--shifts", str(args.shifts),
-            "--two-stems=vocals", 
-            "--mp3", 
+            "--two-stems=vocals",
+            "--mp3",
             "--mp3-bitrate", str(args.quality),
             str(input_mp3)
         ]
+        if device:
+            demucs_cmd = ["demucs", "-d", device] + demucs_cmd[1:]
         run_command(demucs_cmd, verbose=True)
     except Exception as e:
         print(f"[FAIL] Demucs crashed: {e}")
@@ -310,7 +328,11 @@ def main():
         parser.print_help()
         sys.exit(1)
 
-    print(f"--- Start v4.0 | Utworów: {len(queue)} | Output: {out_path} ---")
+    device_info = get_demucs_device()
+    device_msg = f"Device: {device_info}" if device_info else "Device: cpu (MPS niedostępne)"
+    if not device_info and sys.platform == "darwin":
+        device_msg += " — zobacz README sekcja Mac M1"
+    print(f"--- Start v4.0 | Utworów: {len(queue)} | Output: {out_path} | {device_msg} ---")
 
     for idx, item in enumerate(queue, 1):
         item_path = Path(item)
