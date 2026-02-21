@@ -38,6 +38,7 @@ docker-compose build
 - `-s 1-5` — demucs shifts/passes (higher = better quality, slower)
 - `-k` — keep original downloaded file
 - `-i` — input text file with queries/URLs (one per line)
+- `-f` — folder with local audio files (mp3, opus, m4a, wav, flac, etc.)
 - `-o` — output directory (default `./output`)
 
 ## Docker setup

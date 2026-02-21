@@ -9,6 +9,9 @@ from pathlib import Path
 # --- KONFIGURACJA GLOBALNA ---
 REQUIRED_TOOLS = ["yt-dlp", "demucs", "ffmpeg"]
 
+# Obsługiwane rozszerzenia przy wejściu z folderu (Demucs używa ffmpeg)
+AUDIO_EXTENSIONS = {".mp3", ".opus", ".m4a", ".m4b", ".wav", ".flac", ".ogg", ".aac", ".wma"}
+
 # Mapowanie modeli (Aliasy)
 MODEL_MAP = {
     "1": "htdemucs",        # Standard
@@ -113,6 +116,49 @@ def resolve_album_tracks(album_query, source):
         print(f"[ERROR] Nie udało się pobrać listy utworów z albumu: {e}")
         return []
 
+def process_local_file(input_path, index, total, args, output_dir):
+    """Separacja dla lokalnego pliku audio (bez pobierania). Obsługuje mp3, opus, m4a, wav, flac itd."""
+    input_path = Path(input_path)
+    if not input_path.exists():
+        print(f"[ERROR] Plik nie istnieje: {input_path}")
+        return
+
+    base_name = input_path.stem
+    selected_model = resolve_model(args.model)
+    final_dest = output_dir / f"{base_name}-no-vocals.mp3"
+
+    if final_dest.exists():
+        print(f">>> [SKIP] Plik docelowy już istnieje: {final_dest.name}")
+        return
+
+    # Separacja (Demucs)
+    print(f"   >>> Separacja (Model: {selected_model}, Shifts: {args.shifts})...")
+    try:
+        demucs_cmd = [
+            "demucs",
+            "-n", selected_model,
+            "--shifts", str(args.shifts),
+            "--two-stems=vocals",
+            "--mp3",
+            "--mp3-bitrate", str(args.quality),
+            str(input_path.absolute())
+        ]
+        run_command(demucs_cmd, verbose=True)
+    except Exception as e:
+        print(f"[FAIL] Demucs crashed: {e}")
+        return
+
+    # Przenoszenie i sprzątanie
+    source_stem = Path("separated") / selected_model / base_name / "no_vocals.mp3"
+    if source_stem.exists():
+        shutil.move(str(source_stem), str(final_dest))
+        print(f">>> SUKCES: {final_dest}")
+        shutil.rmtree("separated", ignore_errors=True)
+        # Nie usuwamy oryginału — to plik użytkownika
+    else:
+        print(f"[WTF] Demucs zakończył pracę, ale nie widzę pliku: {source_stem}")
+
+
 def process_item(query, index, total, args, output_dir):
     # Logika detekcji źródła
     search_prefix = SOURCE_MAP.get(args.source, "ytmusicsearch1")
@@ -207,7 +253,8 @@ def main():
     parser = argparse.ArgumentParser(description="Linus Audio Extractor v4.0 (Stable)")
     
     parser.add_argument("-i", "--input", help="Plik tekstowy z listą utworów")
-    parser.add_argument("query", nargs="*", help="Frazy lub linki")
+    parser.add_argument("-f", "--folder", help="Folder z plikami audio do separacji (mp3, opus, m4a, wav, flac itd.)")
+    parser.add_argument("query", nargs="*", help="Frazy, linki lub ścieżki do plików")
     
     # Parametry
     parser.add_argument("-m", "--model", default="1", help="Model: 1=htdemucs, 2=htdemucs_ft, 3=mdx_q, 4=mdx_extra")
@@ -243,6 +290,16 @@ def main():
     if args.query:
         queue.extend(args.query)
 
+    # Folder z plikami audio -> lista ścieżek
+    if args.folder:
+        folder_path = Path(args.folder)
+        if not folder_path.is_dir():
+            print(f"Błąd: Folder '{args.folder}' nie istnieje lub nie jest katalogiem.")
+            sys.exit(1)
+        for f in sorted(folder_path.iterdir()):
+            if f.is_file() and f.suffix.lower() in AUDIO_EXTENSIONS:
+                queue.append(str(f.resolve()))
+
     # Rozwiązywanie albumów -> lista URL-i
     if args.album:
         for album_name in args.album:
@@ -254,9 +311,13 @@ def main():
         sys.exit(1)
 
     print(f"--- Start v4.0 | Utworów: {len(queue)} | Output: {out_path} ---")
-    
+
     for idx, item in enumerate(queue, 1):
-        process_item(item, idx, len(queue), args, out_path)
+        item_path = Path(item)
+        if item_path.exists() and item_path.is_file():
+            process_local_file(item_path, idx, len(queue), args, out_path)
+        else:
+            process_item(item, idx, len(queue), args, out_path)
         print("-" * 60)
 
 if __name__ == "__main__":

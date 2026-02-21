@@ -38,6 +38,12 @@ Podstawowe wywołanie (szuka na YT, pobiera, separuje, zapisuje w ./output):
 python3 yt-batch.py "Nazwa Utworu"
 ```
 
+Separacja lokalnego folderu (mp3, opus, m4a, wav, flac — Demucs obsługuje formaty wspierane przez ffmpeg):
+
+```bash
+python3 yt-batch.py -f ./moje-pliki-audio
+```
+
 ## Flagi i Parametry
 
 | Flaga             | Skrót | Opis                                    | Domyślnie |
@@ -48,6 +54,7 @@ python3 yt-batch.py "Nazwa Utworu"
 | `--shifts`        | `-s`  | Liczba przesunięć (1=szybko, 2+=jakość) | 1         |
 | `--keep-original` | `-k`  | Zachowaj oryginalny plik z wokalem      | False     |
 | `--input`         | `-i`  | Plik .txt z listą linków/fraz           | -         |
+| `--folder`        | `-f`  | Folder z plikami audio (mp3, opus, m4a, wav, flac itd.) | -         |
 | `--album`         | `-a`  | Nazwa albumu (pobiera wszystkie utwory). Można podać wielokrotnie. | -         |
 | `--source`        |       | Źródło wyszukiwania: `ytm`=YouTube Music, `yt`=YouTube | ytm       |
 
@@ -65,6 +72,10 @@ Skrypt automatycznie zarządza plikami tymczasowymi. Finalny plik ląduje w:
 ```
 /output/Nazwa_Piosenki-no-vocals.mp3
 ```
+
+## 📋 Formaty wejściowe (tryb -f)
+
+Demucs korzysta z ffmpeg i obsługuje m.in.: **mp3**, **opus**, **m4a**, **m4b**, **wav**, **flac**, **ogg**, **aac**.
 
 ## 🐛 Rozwiązywanie problemów
 
