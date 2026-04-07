@@ -38,7 +38,7 @@ def test_process_local_file_success_moves_output(
 
     calls = {"run": 0, "move": 0, "rmtree": 0, "demucs": 0, "ffmpeg": 0}
 
-    def fake_run_command(cmd, verbose=False):
+    def fake_run_command(cmd, verbose=False, env_overrides=None):
         calls["run"] += 1
         if cmd[0] == "demucs":
             calls["demucs"] += 1

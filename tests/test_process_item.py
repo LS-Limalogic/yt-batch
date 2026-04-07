@@ -28,7 +28,7 @@ def test_process_item_download_then_success_move(tmp_path, args_factory, yt_batc
 
     state = {"downloaded": False}
 
-    def fake_run_command(cmd, verbose=False):
+    def fake_run_command(cmd, verbose=False, env_overrides=None):
         if "--get-filename" in cmd:
             return f"{base_name}.mp3"
         if cmd[0] == "yt-dlp" and "-x" in cmd and "--get-filename" not in cmd:
@@ -58,7 +58,7 @@ def test_process_item_ytm_uses_resolved_music_url(tmp_path, args_factory, yt_bat
     args = args_factory(source="ytm")
     seen_sources = []
 
-    def fake_run_command(cmd, verbose=False):
+    def fake_run_command(cmd, verbose=False, env_overrides=None):
         if "--get-filename" in cmd:
             seen_sources.append(cmd[-1])
             raise RuntimeError("stop after source capture")
@@ -94,7 +94,7 @@ def test_process_item_ytm_accepts_music_url(tmp_path, args_factory, yt_batch_mod
     input_mp3 = tmp_path / "song.mp3"
     source_stem = tmp_path / "separated" / yt_batch_module.resolve_model("1") / "song" / "no_vocals.mp3"
 
-    def fake_run_command(cmd, verbose=False):
+    def fake_run_command(cmd, verbose=False, env_overrides=None):
         if "--get-filename" in cmd:
             return "song.mp3"
         if cmd[0] == "yt-dlp" and "-x" in cmd and "--get-filename" not in cmd:
@@ -124,7 +124,7 @@ def test_process_item_demucs_error_deletes_input_when_not_keep(
     input_mp3 = tmp_path / "song.mp3"
     input_mp3.write_text("audio", encoding="utf-8")
 
-    def fake_run_command(cmd, verbose=False):
+    def fake_run_command(cmd, verbose=False, env_overrides=None):
         if "--get-filename" in cmd:
             return "song.mp3"
         if cmd[0] == "demucs":

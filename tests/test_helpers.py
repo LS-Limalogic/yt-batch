@@ -1,6 +1,7 @@
 import json
 import subprocess
 import sys
+from pathlib import Path
 from types import ModuleType
 from types import SimpleNamespace
 
@@ -89,20 +90,54 @@ def test_run_command_returns_stripped_stdout(monkeypatch, yt_batch_module):
 def test_run_command_verbose_sets_streams(monkeypatch, yt_batch_module):
     captured = {}
 
-    def fake_run(cmd, check, stdout, stderr, text):
+    class FakeProcess:
+        def __init__(self, lines, returncode=0):
+            self.stdout = iter(lines)
+            self.returncode = returncode
+
+        def wait(self):
+            return self.returncode
+
+    def fake_popen(cmd, stdout, stderr, text, env):
         captured["cmd"] = cmd
         captured["stdout"] = stdout
         captured["stderr"] = stderr
         captured["text"] = text
-        return SimpleNamespace(stdout=None)
+        captured["env"] = env
+        return FakeProcess([])
 
-    monkeypatch.setattr(yt_batch_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(yt_batch_module.subprocess, "Popen", fake_popen)
     out = yt_batch_module.run_command(["echo", 1], verbose=True)
     assert out == ""
     assert captured["cmd"] == ["echo", "1"]
-    assert captured["stdout"] is None
-    assert captured["stderr"] is None
+    assert captured["stdout"] == yt_batch_module.subprocess.PIPE
+    assert captured["stderr"] == yt_batch_module.subprocess.STDOUT
     assert captured["text"] is True
+    assert captured["env"] is None
+
+
+def test_run_command_verbose_formats_noisy_float_output(monkeypatch, yt_batch_module, capsys):
+    class FakeProcess:
+        def __init__(self):
+            self.stdout = iter(
+                [
+                    "327.59999999999997/327.59999999999997 [00:41<00:00,  7.94seconds/s]\n",
+                ]
+            )
+            self.returncode = 0
+
+        def wait(self):
+            return self.returncode
+
+    monkeypatch.setattr(
+        yt_batch_module.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: FakeProcess(),
+    )
+
+    yt_batch_module.run_command(["dummy"], verbose=True)
+    output = capsys.readouterr().out
+    assert "327.6/327.6" in output
 
 
 def test_run_command_raises_runtime_error_for_stderr(monkeypatch, yt_batch_module):
@@ -113,6 +148,29 @@ def test_run_command_raises_runtime_error_for_stderr(monkeypatch, yt_batch_modul
 
     with pytest.raises(RuntimeError, match="Komenda nie powiodła się: failure"):
         yt_batch_module.run_command(["false"])
+
+
+def test_copy_audio_metadata_uses_tmp_name_with_audio_suffix(monkeypatch, tmp_path, yt_batch_module):
+    metadata_source = tmp_path / "src.mp3"
+    audio_target = tmp_path / "out.mp3"
+    metadata_source.write_text("meta", encoding="utf-8")
+    audio_target.write_text("audio", encoding="utf-8")
+
+    captured = {}
+
+    def fake_run_command(cmd, verbose=False, env_overrides=None):
+        captured["cmd"] = cmd
+        temp_output = Path(cmd[-1])
+        temp_output.write_text("tmp-audio", encoding="utf-8")
+        return ""
+
+    monkeypatch.setattr(yt_batch_module, "run_command", fake_run_command)
+
+    ok = yt_batch_module.copy_audio_metadata(metadata_source, audio_target)
+
+    assert ok is True
+    assert captured["cmd"][-1].endswith(".tmp.mp3")
+    assert audio_target.read_text(encoding="utf-8") == "tmp-audio"
 
 
 def test_resolve_model_from_alias(yt_batch_module):

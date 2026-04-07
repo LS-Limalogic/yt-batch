@@ -4,6 +4,8 @@ import shutil
 import argparse
 import signal
 import json
+import os
+import re
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -81,26 +83,64 @@ def check_python_runtime():
         print("3) Sprawdź: python3 -c \"import hashlib, numpy; hashlib.blake2b(b'x')\"")
         sys.exit(1)
 
-def run_command(cmd, verbose=False):
+FLOAT_NOISE_RE = re.compile(r"(?<![\w.])(\d+\.\d{3,})(?![\w.])")
+
+
+def format_noisy_floats(text):
+    """Ucina długie rozwinięcia floatów (np. 17.549999999999997 -> 17.5)."""
+    if not text:
+        return text
+
+    def _round(match):
+        return f"{float(match.group(1)):.1f}"
+
+    return FLOAT_NOISE_RE.sub(_round, text)
+
+
+def run_command(cmd, verbose=False, env_overrides=None):
     """Wrapper na subprocess z lepszą obsługą błędów."""
     try:
         # Konwersja wszystkich elementów komendy na stringi (bezpieczeństwo typów)
         cmd_str = [str(c) for c in cmd]
-        
-        stdout_setting = None if verbose else subprocess.PIPE
+
+        env = None
+        if env_overrides:
+            env = os.environ.copy()
+            env.update(env_overrides)
+
+        if verbose:
+            process = subprocess.Popen(
+                cmd_str,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                env=env
+            )
+            full_output = []
+            for line in process.stdout:
+                clean_line = format_noisy_floats(line.rstrip("\n"))
+                full_output.append(clean_line)
+                print(clean_line)
+            return_code = process.wait()
+            if return_code != 0:
+                joined_output = "\n".join(full_output)
+                raise subprocess.CalledProcessError(return_code, cmd_str, stderr=joined_output)
+            return ""
+
         result = subprocess.run(
-            cmd_str, 
-            check=True, 
-            stdout=stdout_setting, 
-            stderr=subprocess.PIPE if not verbose else None, 
-            text=True
+            cmd_str,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env
         )
         return result.stdout.strip() if result.stdout else ""
     except subprocess.CalledProcessError as e:
         if not verbose and e.stderr:
             # Zwracamy stderr, żeby wyższa warstwa mogła go zalogować
             error_msg = e.stderr.decode('utf-8', errors='replace').strip() if isinstance(e.stderr, bytes) else e.stderr.strip()
-            raise RuntimeError(f"Komenda nie powiodła się: {error_msg}")
+            raise RuntimeError(f"Komenda nie powiodła się: {format_noisy_floats(error_msg)}")
         raise e
 
 def copy_audio_metadata(metadata_source, audio_target):
@@ -110,7 +150,9 @@ def copy_audio_metadata(metadata_source, audio_target):
     """
     metadata_source = Path(metadata_source)
     audio_target = Path(audio_target)
-    temp_output = audio_target.with_suffix(f"{audio_target.suffix}.tmp")
+    # FFmpeg rozpoznaje format po ostatnim rozszerzeniu, więc ".mp3.tmp" powoduje błąd muxera.
+    # Utrzymujemy końcowe rozszerzenie ".mp3", dodając znacznik tymczasowy przed suffixem.
+    temp_output = audio_target.with_name(f"{audio_target.stem}.tmp{audio_target.suffix}")
 
     ffmpeg_cmd = [
         "ffmpeg",
@@ -130,7 +172,7 @@ def copy_audio_metadata(metadata_source, audio_target):
     except Exception as e:
         if temp_output.exists():
             temp_output.unlink()
-        print(f"[WARN] Nie udało się skopiować metadanych do {audio_target.name}: {e}")
+        print(f"[WARN] Nie udało się skopiować metadanych do {audio_target.name}: {format_noisy_floats(str(e))}")
         return False
 
 def resolve_model(model_arg):
@@ -170,7 +212,7 @@ def resolve_ytmusic_url(query):
         print(f"[ERROR] Nie znaleziono wyniku w YouTube Music dla: {query}")
         return None
     except Exception as e:
-        print(f"[ERROR] Błąd wyszukiwania YouTube Music: {e}")
+        print(f"[ERROR] Błąd wyszukiwania YouTube Music: {format_noisy_floats(str(e))}")
         return None
 
 
@@ -192,7 +234,7 @@ def resolve_album_tracks(album_query, source):
             print(f"   >>> Znaleziono {len(urls)} utworów w albumie")
             return urls
         except Exception as e:
-            print(f"[ERROR] Nie udało się pobrać listy utworów z albumu: {e}")
+            print(f"[ERROR] Nie udało się pobrać listy utworów z albumu: {format_noisy_floats(str(e))}")
             return []
 
     search_prefix = SOURCE_MAP.get(source, "ytsearch1")
@@ -205,7 +247,7 @@ def resolve_album_tracks(album_query, source):
         meta_json = run_command(meta_cmd)
         meta = json.loads(meta_json)
     except Exception as e:
-        print(f"[ERROR] Nie udało się znaleźć albumu: {e}")
+        print(f"[ERROR] Nie udało się znaleźć albumu: {format_noisy_floats(str(e))}")
         return []
 
     # Krok 2: Szukamy playlist_id (album na YT Music = playlist OLAK5uy_...)
@@ -228,7 +270,7 @@ def resolve_album_tracks(album_query, source):
         print(f"   >>> Znaleziono {len(urls)} utworów w albumie")
         return urls
     except Exception as e:
-        print(f"[ERROR] Nie udało się pobrać listy utworów z albumu: {e}")
+        print(f"[ERROR] Nie udało się pobrać listy utworów z albumu: {format_noisy_floats(str(e))}")
         return []
 
 def process_local_file(input_path, index, total, args, output_dir):
@@ -263,7 +305,7 @@ def process_local_file(input_path, index, total, args, output_dir):
             demucs_cmd = ["demucs", "-d", device] + demucs_cmd[1:]
         run_command(demucs_cmd, verbose=True)
     except Exception as e:
-        print(f"[FAIL] Demucs crashed: {e}")
+        print(f"[FAIL] Demucs crashed: {format_noisy_floats(str(e))}")
         return
 
     # Przenoszenie i sprzątanie
@@ -315,7 +357,7 @@ def process_item(query, index, total, args, output_dir):
 
     except Exception as e:
         print(f"[ERROR] Nie udało się pobrać metadanych dla: {query}")
-        print(f"Powód: {e}")
+        print(f"Powód: {format_noisy_floats(str(e))}")
         return
 
     # 2. Pobieranie Audio
@@ -336,7 +378,7 @@ def process_item(query, index, total, args, output_dir):
                 raise FileNotFoundError(f"yt-dlp zgłosił sukces, ale plik {input_mp3} nie istnieje.")
                 
         except Exception as e:
-            print(f"[FAIL] Błąd pobierania: {e}")
+            print(f"[FAIL] Błąd pobierania: {format_noisy_floats(str(e))}")
             return
     else:
         print("   >>> Używam lokalnego pliku źródłowego (cache).")
@@ -358,7 +400,7 @@ def process_item(query, index, total, args, output_dir):
             demucs_cmd = ["demucs", "-d", device] + demucs_cmd[1:]
         run_command(demucs_cmd, verbose=True)
     except Exception as e:
-        print(f"[FAIL] Demucs crashed: {e}")
+        print(f"[FAIL] Demucs crashed: {format_noisy_floats(str(e))}")
         # Sprzątamy wadliwy plik wejściowy, żeby nie blokował kolejnych prób
         if input_mp3.exists() and not args.keep_original:
             input_mp3.unlink()
