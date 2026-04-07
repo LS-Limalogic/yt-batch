@@ -1,0 +1,126 @@
+import json
+import subprocess
+from types import SimpleNamespace
+
+import pytest
+
+
+def test_check_dependencies_exits_when_missing_tools(monkeypatch, yt_batch_module):
+    missing = {"demucs", "ffmpeg"}
+    monkeypatch.setattr(
+        yt_batch_module.shutil, "which", lambda tool: None if tool in missing else "/usr/bin/tool"
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        yt_batch_module.check_dependencies()
+
+    assert exc.value.code == 1
+
+
+def test_check_dependencies_passes_when_all_tools_present(monkeypatch, yt_batch_module):
+    monkeypatch.setattr(yt_batch_module.shutil, "which", lambda _tool: "/usr/bin/tool")
+    yt_batch_module.check_dependencies()
+
+
+def test_run_command_returns_stripped_stdout(monkeypatch, yt_batch_module):
+    monkeypatch.setattr(
+        yt_batch_module.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(stdout="  abc \n"),
+    )
+    out = yt_batch_module.run_command(["echo", "abc"])
+    assert out == "abc"
+
+
+def test_run_command_verbose_sets_streams(monkeypatch, yt_batch_module):
+    captured = {}
+
+    def fake_run(cmd, check, stdout, stderr, text):
+        captured["cmd"] = cmd
+        captured["stdout"] = stdout
+        captured["stderr"] = stderr
+        captured["text"] = text
+        return SimpleNamespace(stdout=None)
+
+    monkeypatch.setattr(yt_batch_module.subprocess, "run", fake_run)
+    out = yt_batch_module.run_command(["echo", 1], verbose=True)
+    assert out == ""
+    assert captured["cmd"] == ["echo", "1"]
+    assert captured["stdout"] is None
+    assert captured["stderr"] is None
+    assert captured["text"] is True
+
+
+def test_run_command_raises_runtime_error_for_stderr(monkeypatch, yt_batch_module):
+    def fake_run(*_args, **_kwargs):
+        raise subprocess.CalledProcessError(1, "x", stderr="failure")
+
+    monkeypatch.setattr(yt_batch_module.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="Komenda nie powiodła się: failure"):
+        yt_batch_module.run_command(["false"])
+
+
+def test_resolve_model_from_alias(yt_batch_module):
+    assert yt_batch_module.resolve_model("2") == "htdemucs_ft"
+    assert yt_batch_module.resolve_model("custom-model") == "custom-model"
+
+
+def test_get_demucs_device_returns_mps(monkeypatch, yt_batch_module):
+    class Backends:
+        class mps:
+            @staticmethod
+            def is_available():
+                return True
+
+            @staticmethod
+            def is_built():
+                return True
+
+    fake_torch = SimpleNamespace(backends=Backends())
+    monkeypatch.setitem(__import__("sys").modules, "torch", fake_torch)
+    assert yt_batch_module.get_demucs_device() == "mps"
+
+
+def test_get_demucs_device_returns_none_when_unavailable(monkeypatch, yt_batch_module):
+    class Backends:
+        class mps:
+            @staticmethod
+            def is_available():
+                return False
+
+            @staticmethod
+            def is_built():
+                return True
+
+    fake_torch = SimpleNamespace(backends=Backends())
+    monkeypatch.setitem(__import__("sys").modules, "torch", fake_torch)
+    assert yt_batch_module.get_demucs_device() is None
+
+
+def test_resolve_album_tracks_success(monkeypatch, yt_batch_module):
+    responses = [
+        json.dumps({"playlist_id": "PL123", "album": "My Album"}),
+        "https://youtu.be/a\nhttps://youtu.be/b\n",
+    ]
+
+    def fake_run_command(_cmd, verbose=False):
+        assert verbose is False
+        return responses.pop(0)
+
+    monkeypatch.setattr(yt_batch_module, "run_command", fake_run_command)
+    urls = yt_batch_module.resolve_album_tracks("album", "ytm")
+    assert urls == ["https://youtu.be/a", "https://youtu.be/b"]
+
+
+def test_resolve_album_tracks_without_playlist_returns_empty(monkeypatch, yt_batch_module):
+    monkeypatch.setattr(yt_batch_module, "run_command", lambda _cmd: json.dumps({"album": "x"}))
+    assert yt_batch_module.resolve_album_tracks("album", "ytm") == []
+
+
+def test_resolve_album_tracks_handles_command_error(monkeypatch, yt_batch_module):
+    def boom(_cmd, verbose=False):
+        raise RuntimeError("bad")
+
+    monkeypatch.setattr(yt_batch_module, "run_command", boom)
+    assert yt_batch_module.resolve_album_tracks("album", "ytm") == []

@@ -25,13 +25,35 @@ System musi posiadać zainstalowane w `$PATH`:
 ```bash
 # 1. Sklonuj repozytorium lub pobierz skrypt
 # 2. Zainstaluj zależności Pythona
-pip install yt-dlp demucs
+pip install yt-dlp demucs pytest
 
 # 3. Zainstaluj ffmpeg (Ubuntu)
 sudo apt update && sudo apt install ffmpeg
 
 # 3. Zainstaluj ffmpeg (MacOS)
 brew install ffmpeg
+```
+
+## ✅ Testy jednostkowe
+
+Projekt ma testy jednostkowe w `pytest`, rozdzielone na moduły:
+
+- `tests/test_helpers.py` - funkcje pomocnicze i warstwa komend
+- `tests/test_process_local_file.py` - separacja plików lokalnych
+- `tests/test_process_item.py` - pipeline dla query/URL
+- `tests/test_main_cli.py` - wejście CLI i dispatch z `main`
+
+Uruchamianie:
+
+```bash
+# Wszystkie testy
+python3 -m pytest -q
+
+# Pojedyncze moduły
+python3 -m pytest -q tests/test_helpers.py
+python3 -m pytest -q tests/test_process_local_file.py
+python3 -m pytest -q tests/test_process_item.py
+python3 -m pytest -q tests/test_main_cli.py
 ```
 
 ## 💻 Użycie

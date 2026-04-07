@@ -75,6 +75,36 @@ def run_command(cmd, verbose=False):
             raise RuntimeError(f"Komenda nie powiodła się: {error_msg}")
         raise e
 
+def copy_audio_metadata(metadata_source, audio_target):
+    """
+    Kopiuje metadane z pliku źródłowego do istniejącego pliku MP3.
+    Audio pochodzi z audio_target, tagi z metadata_source.
+    """
+    metadata_source = Path(metadata_source)
+    audio_target = Path(audio_target)
+    temp_output = audio_target.with_suffix(f"{audio_target.suffix}.tmp")
+
+    ffmpeg_cmd = [
+        "ffmpeg",
+        "-y",
+        "-i", str(audio_target),
+        "-i", str(metadata_source),
+        "-map", "0:a",
+        "-map_metadata", "1",
+        "-c", "copy",
+        str(temp_output)
+    ]
+
+    try:
+        run_command(ffmpeg_cmd, verbose=False)
+        temp_output.replace(audio_target)
+        return True
+    except Exception as e:
+        if temp_output.exists():
+            temp_output.unlink()
+        print(f"[WARN] Nie udało się skopiować metadanych do {audio_target.name}: {e}")
+        return False
+
 def resolve_model(model_arg):
     return MODEL_MAP.get(str(model_arg), model_arg)
 
@@ -167,6 +197,7 @@ def process_local_file(input_path, index, total, args, output_dir):
     source_stem = Path("separated") / selected_model / base_name / "no_vocals.mp3"
     if source_stem.exists():
         shutil.move(str(source_stem), str(final_dest))
+        copy_audio_metadata(input_path, final_dest)
         print(f">>> SUKCES: {final_dest}")
         shutil.rmtree("separated", ignore_errors=True)
         # Nie usuwamy oryginału — to plik użytkownika
@@ -256,6 +287,7 @@ def process_item(query, index, total, args, output_dir):
     
     if source_stem.exists():
         shutil.move(str(source_stem), str(final_dest))
+        copy_audio_metadata(input_mp3, final_dest)
         print(f">>> SUKCES: {final_dest}")
         
         # Sprzątanie tymczasowe
