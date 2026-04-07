@@ -10,22 +10,23 @@ System musi posiadać zainstalowane w `$PATH`:
 2. **ffmpeg** (Kluczowe dla przetwarzania audio)
 3. **yt-dlp** (Pobieranie źródeł)
 4. **Demucs** (`pip install demucs`)
+5. **ytmusicapi** (dla źródła `--source ytm`)
 
 ### Akceleracja Sprzętowa (Opcjonalne, ale zalecane)
 
 - **NVIDIA:** Zainstalowane sterowniki CUDA + PyTorch w wersji CUDA.
 - **MacOS (M1/M2/M3):** MPS (Metal) — skrypt automatycznie używa `-d mps` gdy dostępne. **Ważne:** PyTorch musi być wersja z MPS (nie CPU-only). Jeśli skrypt pokazuje "Device: cpu" na Apple Silicon, wykonaj:
-  ```bash
-  pip install --upgrade torch torchaudio
-  ```
-  Nie używaj `--extra-index-url https://download.pytorch.org/whl/cpu` — to instaluje wersję bez MPS.
+    ```bash
+    pip install --upgrade torch torchaudio
+    ```
+    Nie używaj `--extra-index-url https://download.pytorch.org/whl/cpu` — to instaluje wersję bez MPS.
 
 ## 🚀 Instalacja
 
 ```bash
 # 1. Sklonuj repozytorium lub pobierz skrypt
 # 2. Zainstaluj zależności Pythona
-pip install yt-dlp demucs pytest
+pip install yt-dlp demucs ytmusicapi pytest
 
 # 3. Zainstaluj ffmpeg (Ubuntu)
 sudo apt update && sudo apt install ffmpeg
@@ -58,7 +59,7 @@ python3 -m pytest -q tests/test_main_cli.py
 
 ## 💻 Użycie
 
-Podstawowe wywołanie (szuka na YT, pobiera, separuje, zapisuje w ./output):
+Podstawowe wywołanie (domyślnie szuka w YouTube Music, pobiera, separuje, zapisuje w ./output):
 
 ```bash
 python3 yt-batch.py "Nazwa Utworu"
@@ -82,7 +83,7 @@ python3 yt-batch.py -f ./moje-pliki-audio
 | `--input`         | `-i`  | Plik .txt z listą linków/fraz                                      | -         |
 | `--folder`        | `-f`  | Folder z plikami audio (mp3, opus, m4a, wav, flac itd.)            | -         |
 | `--album`         | `-a`  | Nazwa albumu (pobiera wszystkie utwory). Można podać wielokrotnie. | -         |
-| `--source`        |       | Źródło wyszukiwania: `ytm`=YouTube Music, `yt`=YouTube             | ytm       |
+| `--source`        |       | Źródło: `ytm`=YouTube Music search, `yt`=YouTube search            | ytm       |
 
 ## Mapa Modeli (-m)
 

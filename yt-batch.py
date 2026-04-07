@@ -5,6 +5,7 @@ import argparse
 import signal
 import json
 from pathlib import Path
+from urllib.parse import urlparse
 
 # --- KONFIGURACJA GLOBALNA ---
 REQUIRED_TOOLS = ["yt-dlp", "demucs", "ffmpeg"]
@@ -21,7 +22,7 @@ MODEL_MAP = {
 }
 
 SOURCE_MAP = {
-    "ytm": "ytmusicsearch1",   # YouTube Music (default)
+    "ytm": None,
     "yt":  "ytsearch1",        # YouTube
 }
 
@@ -147,9 +148,54 @@ def get_demucs_device():
     return None
 
 
+def resolve_ytmusic_url(query):
+    """Resolve text query to a direct music.youtube.com track URL."""
+    try:
+        from ytmusicapi import YTMusic
+    except Exception:
+        print("[ERROR] Brak zależności: ytmusicapi.")
+        print("Zainstaluj: python3 -m pip install ytmusicapi")
+        return None
+
+    try:
+        ytm = YTMusic()
+        songs = ytm.search(query, filter="songs", limit=1)
+        if songs and songs[0].get("videoId"):
+            return f"https://music.youtube.com/watch?v={songs[0]['videoId']}"
+
+        videos = ytm.search(query, filter="videos", limit=1)
+        if videos and videos[0].get("videoId"):
+            return f"https://music.youtube.com/watch?v={videos[0]['videoId']}"
+
+        print(f"[ERROR] Nie znaleziono wyniku w YouTube Music dla: {query}")
+        return None
+    except Exception as e:
+        print(f"[ERROR] Błąd wyszukiwania YouTube Music: {e}")
+        return None
+
+
 def resolve_album_tracks(album_query, source):
     """Wyszukaj album i zwróć listę URL-i do wszystkich utworów."""
-    search_prefix = SOURCE_MAP.get(source, "ytmusicsearch1")
+    if source == "ytm":
+        if not album_query.startswith(("http://", "https://")):
+            print("[ERROR] --source ytm nie obsługuje wyszukiwania tekstowego albumu.")
+            print("Podaj bezpośredni URL albumu/playlisty z music.youtube.com.")
+            return []
+        parsed = urlparse(album_query)
+        if parsed.netloc != "music.youtube.com":
+            print("[ERROR] --source ytm akceptuje tylko URL-e z music.youtube.com.")
+            return []
+        try:
+            tracks_cmd = ["yt-dlp", "--flat-playlist", "--print", "url", album_query]
+            tracks_output = run_command(tracks_cmd)
+            urls = [u.strip() for u in tracks_output.split('\n') if u.strip()]
+            print(f"   >>> Znaleziono {len(urls)} utworów w albumie")
+            return urls
+        except Exception as e:
+            print(f"[ERROR] Nie udało się pobrać listy utworów z albumu: {e}")
+            return []
+
+    search_prefix = SOURCE_MAP.get(source, "ytsearch1")
     search_term = f"{search_prefix}:{album_query}"
 
     # Krok 1: Znajdź pierwszy wynik i pobierz metadane JSON
@@ -234,12 +280,22 @@ def process_local_file(input_path, index, total, args, output_dir):
 
 def process_item(query, index, total, args, output_dir):
     # Logika detekcji źródła
-    search_prefix = SOURCE_MAP.get(args.source, "ytmusicsearch1")
     if not query.startswith(("http://", "https://")):
         print(f"\n[{index}/{total}] Wyszukiwanie ({args.source}): '{query}'")
-        dl_source = f"{search_prefix}:{query}"
+        if args.source == "ytm":
+            dl_source = resolve_ytmusic_url(query)
+            if not dl_source:
+                return
+        else:
+            search_prefix = SOURCE_MAP.get(args.source, "ytsearch1")
+            dl_source = f"{search_prefix}:{query}"
     else:
         print(f"\n[{index}/{total}] URL: {query}")
+        if args.source == "ytm":
+            parsed = urlparse(query)
+            if parsed.netloc != "music.youtube.com":
+                print("[ERROR] --source ytm akceptuje tylko URL-e z music.youtube.com.")
+                return
         dl_source = query
 
     selected_model = resolve_model(args.model)
@@ -341,7 +397,12 @@ def main():
     parser.add_argument("-s", "--shifts", type=int, default=1, choices=[1, 2, 3, 4, 5], help="Passes (1-5)")
     parser.add_argument("-k", "--keep-original", action="store_true", help="Nie usuwaj pliku źródłowego")
     parser.add_argument("-a", "--album", action="append", help="Nazwa albumu (pobierz wszystkie utwory). Można podać wielokrotnie.")
-    parser.add_argument("--source", default="ytm", choices=["ytm", "yt"], help="Źródło wyszukiwania: ytm=YouTube Music (domyślne), yt=YouTube")
+    parser.add_argument(
+        "--source",
+        default="ytm",
+        choices=["ytm", "yt"],
+        help="Źródło: ytm=YouTube Music search (domyślne), yt=YouTube search",
+    )
 
     args = parser.parse_args()
 

@@ -153,6 +153,7 @@ def test_get_demucs_device_returns_none_when_unavailable(monkeypatch, yt_batch_m
 
 
 def test_resolve_album_tracks_success(monkeypatch, yt_batch_module):
+    captured_cmds = []
     responses = [
         json.dumps({"playlist_id": "PL123", "album": "My Album"}),
         "https://youtu.be/a\nhttps://youtu.be/b\n",
@@ -160,16 +161,18 @@ def test_resolve_album_tracks_success(monkeypatch, yt_batch_module):
 
     def fake_run_command(_cmd, verbose=False):
         assert verbose is False
+        captured_cmds.append(_cmd)
         return responses.pop(0)
 
     monkeypatch.setattr(yt_batch_module, "run_command", fake_run_command)
-    urls = yt_batch_module.resolve_album_tracks("album", "ytm")
+    urls = yt_batch_module.resolve_album_tracks("album", "yt")
+    assert captured_cmds[0][-1].startswith("ytsearch1:")
     assert urls == ["https://youtu.be/a", "https://youtu.be/b"]
 
 
 def test_resolve_album_tracks_without_playlist_returns_empty(monkeypatch, yt_batch_module):
     monkeypatch.setattr(yt_batch_module, "run_command", lambda _cmd: json.dumps({"album": "x"}))
-    assert yt_batch_module.resolve_album_tracks("album", "ytm") == []
+    assert yt_batch_module.resolve_album_tracks("album", "yt") == []
 
 
 def test_resolve_album_tracks_handles_command_error(monkeypatch, yt_batch_module):
@@ -177,4 +180,72 @@ def test_resolve_album_tracks_handles_command_error(monkeypatch, yt_batch_module
         raise RuntimeError("bad")
 
     monkeypatch.setattr(yt_batch_module, "run_command", boom)
-    assert yt_batch_module.resolve_album_tracks("album", "ytm") == []
+    assert yt_batch_module.resolve_album_tracks("album", "yt") == []
+
+
+def test_resolve_album_tracks_ytm_requires_music_url(monkeypatch, yt_batch_module, capsys):
+    monkeypatch.setattr(yt_batch_module, "run_command", lambda *_args, **_kwargs: "should not run")
+    assert yt_batch_module.resolve_album_tracks("album name", "ytm") == []
+    assert "ytm nie obsługuje wyszukiwania tekstowego albumu" in capsys.readouterr().out
+
+
+def test_resolve_ytmusic_url_prefers_song(monkeypatch, yt_batch_module):
+    class FakeYTMusic:
+        def search(self, query, filter, limit):
+            assert query == "query"
+            assert limit == 1
+            if filter == "songs":
+                return [{"videoId": "song123"}]
+            return []
+
+    fake_module = ModuleType("ytmusicapi")
+    fake_module.YTMusic = FakeYTMusic
+    monkeypatch.setitem(sys.modules, "ytmusicapi", fake_module)
+
+    url = yt_batch_module.resolve_ytmusic_url("query")
+    assert url == "https://music.youtube.com/watch?v=song123"
+
+
+def test_resolve_ytmusic_url_fallbacks_to_video(monkeypatch, yt_batch_module):
+    class FakeYTMusic:
+        def search(self, query, filter, limit):
+            assert query == "query"
+            assert limit == 1
+            if filter == "songs":
+                return []
+            if filter == "videos":
+                return [{"videoId": "vid456"}]
+            return []
+
+    fake_module = ModuleType("ytmusicapi")
+    fake_module.YTMusic = FakeYTMusic
+    monkeypatch.setitem(sys.modules, "ytmusicapi", fake_module)
+
+    url = yt_batch_module.resolve_ytmusic_url("query")
+    assert url == "https://music.youtube.com/watch?v=vid456"
+
+
+def test_resolve_ytmusic_url_returns_none_when_no_results(monkeypatch, yt_batch_module, capsys):
+    class FakeYTMusic:
+        def search(self, query, filter, limit):
+            return []
+
+    fake_module = ModuleType("ytmusicapi")
+    fake_module.YTMusic = FakeYTMusic
+    monkeypatch.setitem(sys.modules, "ytmusicapi", fake_module)
+
+    assert yt_batch_module.resolve_ytmusic_url("query") is None
+    assert "Nie znaleziono wyniku w YouTube Music" in capsys.readouterr().out
+
+
+def test_resolve_ytmusic_url_returns_none_on_api_error(monkeypatch, yt_batch_module, capsys):
+    class FakeYTMusic:
+        def search(self, query, filter, limit):
+            raise RuntimeError("api down")
+
+    fake_module = ModuleType("ytmusicapi")
+    fake_module.YTMusic = FakeYTMusic
+    monkeypatch.setitem(sys.modules, "ytmusicapi", fake_module)
+
+    assert yt_batch_module.resolve_ytmusic_url("query") is None
+    assert "Błąd wyszukiwania YouTube Music" in capsys.readouterr().out

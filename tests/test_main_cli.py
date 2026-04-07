@@ -100,3 +100,19 @@ def test_main_exits_when_python_runtime_invalid(monkeypatch, yt_batch_module):
     with pytest.raises(SystemExit) as exc:
         yt_batch_module.main()
     assert exc.value.code == 1
+
+
+def test_main_default_source_is_ytm(monkeypatch, yt_batch_module):
+    monkeypatch.setattr(yt_batch_module, "check_dependencies", lambda: None)
+    monkeypatch.setattr(yt_batch_module, "check_python_runtime", lambda: None)
+    monkeypatch.setattr(yt_batch_module, "get_demucs_device", lambda: None)
+    monkeypatch.setattr(yt_batch_module, "process_local_file", lambda *args, **kwargs: None)
+    seen_sources = []
+    monkeypatch.setattr(
+        yt_batch_module,
+        "process_item",
+        lambda _item, _idx, _total, args, _out: seen_sources.append(args.source),
+    )
+    monkeypatch.setattr(yt_batch_module.sys, "argv", ["yt-batch.py", "some query"])
+    yt_batch_module.main()
+    assert seen_sources == ["ytm"]
