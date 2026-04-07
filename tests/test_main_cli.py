@@ -5,6 +5,7 @@ import pytest
 
 def test_main_exits_when_queue_empty(monkeypatch, yt_batch_module):
     monkeypatch.setattr(yt_batch_module, "check_dependencies", lambda: None)
+    monkeypatch.setattr(yt_batch_module, "check_python_runtime", lambda: None)
     monkeypatch.setattr(yt_batch_module, "get_demucs_device", lambda: None)
     monkeypatch.setattr(yt_batch_module.sys, "argv", ["yt-batch.py"])
 
@@ -20,6 +21,7 @@ def test_main_reads_input_file_and_dispatches_process_item(tmp_path, monkeypatch
     calls = {"item": 0}
 
     monkeypatch.setattr(yt_batch_module, "check_dependencies", lambda: None)
+    monkeypatch.setattr(yt_batch_module, "check_python_runtime", lambda: None)
     monkeypatch.setattr(yt_batch_module, "get_demucs_device", lambda: None)
     monkeypatch.setattr(
         yt_batch_module,
@@ -37,6 +39,7 @@ def test_main_folder_not_directory_exits(tmp_path, monkeypatch, yt_batch_module)
     monkeypatch.chdir(tmp_path)
     non_dir = tmp_path / "missing-folder"
     monkeypatch.setattr(yt_batch_module, "check_dependencies", lambda: None)
+    monkeypatch.setattr(yt_batch_module, "check_python_runtime", lambda: None)
     monkeypatch.setattr(yt_batch_module.sys, "argv", ["yt-batch.py", "-f", str(non_dir)])
 
     with pytest.raises(SystemExit) as exc:
@@ -51,6 +54,7 @@ def test_main_dispatches_local_and_remote_items(tmp_path, monkeypatch, yt_batch_
 
     calls = {"local": 0, "remote": 0}
     monkeypatch.setattr(yt_batch_module, "check_dependencies", lambda: None)
+    monkeypatch.setattr(yt_batch_module, "check_python_runtime", lambda: None)
     monkeypatch.setattr(yt_batch_module, "get_demucs_device", lambda: "mps")
     monkeypatch.setattr(
         yt_batch_module,
@@ -80,7 +84,18 @@ def test_main_input_file_non_utf8_exits(tmp_path, monkeypatch, yt_batch_module):
     input_file.write_bytes(b"\xff\xfe\x00\x00")
 
     monkeypatch.setattr(yt_batch_module, "check_dependencies", lambda: None)
+    monkeypatch.setattr(yt_batch_module, "check_python_runtime", lambda: None)
     monkeypatch.setattr(yt_batch_module.sys, "argv", ["yt-batch.py", "-i", str(input_file)])
+
+    with pytest.raises(SystemExit) as exc:
+        yt_batch_module.main()
+    assert exc.value.code == 1
+
+
+def test_main_exits_when_python_runtime_invalid(monkeypatch, yt_batch_module):
+    monkeypatch.setattr(yt_batch_module, "check_dependencies", lambda: None)
+    monkeypatch.setattr(yt_batch_module, "check_python_runtime", lambda: (_ for _ in ()).throw(SystemExit(1)))
+    monkeypatch.setattr(yt_batch_module.sys, "argv", ["yt-batch.py", "query"])
 
     with pytest.raises(SystemExit) as exc:
         yt_batch_module.main()

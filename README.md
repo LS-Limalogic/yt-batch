@@ -109,3 +109,4 @@ Demucs korzysta z ffmpeg i obsługuje m.in.: **mp3**, **opus**, **m4a**, **m4b**
 - **Błąd CUDA out of memory:** Użyj modelu 3 (mdx_extra_q) lub ustaw zmienną środowiskową `PYTORCH_NO_CUDA_MEMORY_CACHING=1`.
 - **Prędkość:** Na samym CPU proces trwa ok. 1-2 minuty na utwór. Na GPU/Metal - sekundy.
 - **Mac M1 nadal CPU:** Zweryfikuj: `python3 -c "import torch; print('MPS:', torch.backends.mps.is_available())"`. Jeśli `False`, przeinstaluj PyTorch (patrz sekcja Akceleracja).
+- **`unsupported hash type blake2b/blake2s` lub `No module named 'numpy'`:** to uszkodzone/niekompletne środowisko Pythona. Napraw: `pyenv uninstall 3.13.0 && pyenv install 3.13.0`, potem `python3 -m pip install --upgrade pip numpy`, a na końcu weryfikacja `python3 -c "import hashlib, numpy; hashlib.blake2b(b'x')"`.

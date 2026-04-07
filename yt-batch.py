@@ -53,6 +53,33 @@ def check_dependencies():
         print("Zainstaluj je (np. apt install ffmpeg / pip install demucs) i spróbuj ponownie.")
         sys.exit(1)
 
+
+def check_python_runtime():
+    """Fail fast: sprawdza podstawowe wymagania runtime Pythona."""
+    runtime_errors = []
+
+    try:
+        import numpy  # noqa: F401
+    except Exception:
+        runtime_errors.append("Brak pakietu Python: numpy")
+
+    try:
+        import hashlib
+        hashlib.blake2b(b"yt-batch-runtime-check").hexdigest()
+        hashlib.blake2s(b"yt-batch-runtime-check").hexdigest()
+    except Exception as e:
+        runtime_errors.append(f"Hashlib/BLAKE2 niedostępne: {e}")
+
+    if runtime_errors:
+        print("BŁĄD KRYTYCZNY: Uszkodzone lub niekompletne środowisko Python.")
+        for error in runtime_errors:
+            print(f"- {error}")
+        print("\nSzybka naprawa:")
+        print("1) Przeinstaluj Python (pyenv), np. pyenv uninstall 3.13.0 && pyenv install 3.13.0")
+        print("2) Doinstaluj zależności: python3 -m pip install --upgrade pip numpy")
+        print("3) Sprawdź: python3 -c \"import hashlib, numpy; hashlib.blake2b(b'x')\"")
+        sys.exit(1)
+
 def run_command(cmd, verbose=False):
     """Wrapper na subprocess z lepszą obsługą błędów."""
     try:
@@ -299,6 +326,7 @@ def process_item(query, index, total, args, output_dir):
 
 def main():
     check_dependencies()
+    check_python_runtime()
     
     parser = argparse.ArgumentParser(description="Linus Audio Extractor v4.0 (Stable)")
     

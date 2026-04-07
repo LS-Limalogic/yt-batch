@@ -1,5 +1,7 @@
 import json
 import subprocess
+import sys
+from types import ModuleType
 from types import SimpleNamespace
 
 import pytest
@@ -20,6 +22,58 @@ def test_check_dependencies_exits_when_missing_tools(monkeypatch, yt_batch_modul
 def test_check_dependencies_passes_when_all_tools_present(monkeypatch, yt_batch_module):
     monkeypatch.setattr(yt_batch_module.shutil, "which", lambda _tool: "/usr/bin/tool")
     yt_batch_module.check_dependencies()
+
+
+def test_check_python_runtime_passes(monkeypatch, yt_batch_module):
+    class FakeHash:
+        def hexdigest(self):
+            return "ok"
+
+    fake_hashlib = ModuleType("hashlib")
+    fake_hashlib.blake2b = lambda _data: FakeHash()
+    fake_hashlib.blake2s = lambda _data: FakeHash()
+
+    monkeypatch.setitem(sys.modules, "numpy", ModuleType("numpy"))
+    monkeypatch.setitem(sys.modules, "hashlib", fake_hashlib)
+    yt_batch_module.check_python_runtime()
+
+
+def test_check_python_runtime_exits_when_numpy_missing(monkeypatch, yt_batch_module):
+    real_import = __import__
+
+    class FakeHash:
+        def hexdigest(self):
+            return "ok"
+
+    fake_hashlib = ModuleType("hashlib")
+    fake_hashlib.blake2b = lambda _data: FakeHash()
+    fake_hashlib.blake2s = lambda _data: FakeHash()
+    monkeypatch.setitem(sys.modules, "hashlib", fake_hashlib)
+
+    def fake_import(name, *args, **kwargs):
+        if name == "numpy":
+            raise ModuleNotFoundError("No module named 'numpy'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.delitem(sys.modules, "numpy", raising=False)
+    monkeypatch.setattr("builtins.__import__", fake_import)
+
+    with pytest.raises(SystemExit) as exc:
+        yt_batch_module.check_python_runtime()
+    assert exc.value.code == 1
+
+
+def test_check_python_runtime_exits_when_blake_unavailable(monkeypatch, yt_batch_module):
+    fake_hashlib = ModuleType("hashlib")
+    fake_hashlib.blake2b = lambda _data: (_ for _ in ()).throw(ValueError("unsupported hash type blake2b"))
+    fake_hashlib.blake2s = lambda _data: (_ for _ in ()).throw(ValueError("unsupported hash type blake2s"))
+
+    monkeypatch.setitem(sys.modules, "numpy", ModuleType("numpy"))
+    monkeypatch.setitem(sys.modules, "hashlib", fake_hashlib)
+
+    with pytest.raises(SystemExit) as exc:
+        yt_batch_module.check_python_runtime()
+    assert exc.value.code == 1
 
 
 def test_run_command_returns_stripped_stdout(monkeypatch, yt_batch_module):
