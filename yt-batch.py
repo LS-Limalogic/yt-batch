@@ -658,7 +658,13 @@ def main():
     parser.add_argument("-q", "--quality", type=int, default=192, help="Bitrate (kbps)")
     parser.add_argument("-s", "--shifts", type=int, default=1, choices=[1, 2, 3, 4, 5], help="Passes (1-5)")
     parser.add_argument("-k", "--keep-original", action="store_true", help="Nie usuwaj pliku źródłowego")
-    parser.add_argument("-a", "--album", action="append", help="Nazwa albumu (pobierz wszystkie utwory). Można podać wielokrotnie.")
+    parser.add_argument(
+        "-a",
+        "--album",
+        action="append",
+        help="Album/playlista: ytm=wymaga URL z music.youtube.com; yt=nazwa do wyszukania. "
+        "Wsadowe pobranie playlisty, wyniki w podkatalogu --outdir. Można podać wielokrotnie.",
+    )
     parser.add_argument(
         "--source",
         default="ytm",

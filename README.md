@@ -82,7 +82,7 @@ python3 yt-batch.py -f ./moje-pliki-audio
 | `--keep-original` | `-k`  | Zachowaj oryginalny plik z wokalem                                 | False     |
 | `--input`         | `-i`  | Plik .txt z listą linków/fraz                                      | -         |
 | `--folder`        | `-f`  | Folder z plikami audio (mp3, opus, m4a, wav, flac itd.)            | -         |
-| `--album`         | `-a`  | Nazwa albumu (pobiera wszystkie utwory). Można podać wielokrotnie. | -         |
+| `--album`         | `-a`  | Album/playlista (patrz [Tryb albumu](#tryb-albumu)). Można podać wielokrotnie. | -         |
 | `--source`        |       | Źródło: `ytm`=YouTube Music search, `yt`=YouTube search            | ytm       |
 
 ## Mapa Modeli (-m)
@@ -92,13 +92,31 @@ python3 yt-batch.py -f ./moje-pliki-audio
 3. **mdx_extra_q** - Kwantyzowany model MDX. Lżejszy dla pamięci, "klasyczne" brzmienie.
 4. **mdx_extra** - Pełny model MDX. Bardzo precyzyjny, ale wolniejszy i pamięciożerny.
 
+## Tryb albumu
+
+- **`--source ytm`:** podaj **URL** playlisty lub albumu z `music.youtube.com` (wyszukiwanie samej frazy tekstowej albumu nie jest obsługiwane).
+- **`--source yt`:** podaj **nazwę albumu** — z pierwszego wyniku wyszukiwania wybierana jest playlista YouTube Music powiązana z albumem.
+- Cała playlista jest pobierana **jednym** wywołaniem `yt-dlp` (numeracja plików `01_…`, osadzanie miniatury i metadanych), następnie każdy utwór przechodzi przez Demucs.
+- Instrumentale zapisywane są w **podkatalogu** katalogu docelowego (`--outdir`). Nazwa folderu pochodzi z metadanych: typowy wzorzec tytułu „Album - …” jest zamieniany na **„Artysta - …”**, jeśli artysta jest dostępny w metadanych; na końcu dodawany jest **rok wydania** w nawiasie `(RRRR)`, gdy yt-dlp zwróci datę / rok.
+- Pobrane pliki źródłowe trzymane są w `{outdir}/.yt-batch-album-tmp/`. Bez `--keep-original` katalog tymczasowy dla danego albumu jest usuwany po przetworzeniu.
+
 ## 📂 Struktura Wyjściowa
 
-Skrypt automatycznie zarządza plikami tymczasowymi. Finalny plik ląduje w:
+Skrypt automatycznie zarządza plikami tymczasowymi.
+
+**Pojedyncze utwory** (query, URL utworu, `-i`, itd.):
 
 ```
-/output/Nazwa_Piosenki-no-vocals.mp3
+{outdir}/Nazwa_Piosenki-no-vocals.mp3
 ```
+
+**Album (`-a`):**
+
+```
+{outdir}/{Folder_albumu}/NN_Tytul_Utworu-no-vocals.mp3
+```
+
+`Folder_albumu` jest bezpieczną nazwą z metadanych (patrz wyżej).
 
 ## 📋 Formaty wejściowe (tryb -f)
 
