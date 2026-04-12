@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import sys
 import subprocess
 import shutil
@@ -6,8 +7,9 @@ import signal
 import json
 import os
 import re
+import hashlib
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 # --- KONFIGURACJA GLOBALNA ---
 REQUIRED_TOOLS = ["yt-dlp", "demucs", "ffmpeg"]
@@ -34,6 +36,9 @@ YT_COMMON_FLAGS = [
     "--restrict-filenames",
     "--no-mtime"  # Ważne: nie zmieniaj czasu modyfikacji pliku na czas uploadu filmu
 ]
+
+# Pojedyncze pobranie całej playlisty (album): numeracja i osadzanie metadanych
+YT_ALBUM_PARSE_METADATA = "playlist_index:%(track_number)s"
 
 def cleanup_handler(signum, frame):
     """Obsługa przerwania Ctrl+C."""
@@ -216,31 +221,183 @@ def resolve_ytmusic_url(query):
         return None
 
 
-def resolve_album_tracks(album_query, source):
-    """Wyszukaj album i zwróć listę URL-i do wszystkich utworów."""
+def safe_album_subdir_name(raw_title, fallback="album"):
+    """Bezpieczna nazwa podkatalogu dla tytułu albumu/playlisty."""
+    if not raw_title or not str(raw_title).strip():
+        base = fallback
+    else:
+        base = str(raw_title).strip()
+    for c in '<>:"/\\|?*\x00':
+        base = base.replace(c, "_")
+    base = re.sub(r"\s+", " ", base)
+    base = base.strip(" .")
+    if not base:
+        base = fallback
+    if len(base) > 180:
+        base = base[:180].rstrip(" .")
+    return base
+
+
+def _fallback_title_from_playlist_url(url):
+    try:
+        lst = parse_qs(urlparse(url).query).get("list")
+        if lst and lst[0]:
+            return lst[0][:48]
+    except Exception:
+        pass
+    return "album"
+
+
+def _pick_artist_from_playlist_meta(meta):
+    """Artysta z metadanych playlisty (-J) lub z pierwszego wpisu."""
+    if not meta:
+        return ""
+    for key in ("artist", "album_artist"):
+        v = meta.get(key)
+        if v and str(v).strip():
+            return str(v).strip()
+    entries = meta.get("entries") or []
+    if entries and isinstance(entries[0], dict):
+        e0 = entries[0]
+        for key in ("artist", "album_artist"):
+            v = e0.get(key)
+            if v and str(v).strip():
+                return str(v).strip()
+    for key in ("uploader", "creator", "channel"):
+        v = meta.get(key)
+        if v and str(v).strip():
+            return str(v).strip()
+    return ""
+
+
+def playlist_folder_display_title(meta):
+    """
+    Tytuł katalogu dla playlisty/albumu.
+    YT Music często zwraca 'Album - Nazwa' — jeśli znany jest artysta, robi 'Artysta - Nazwa'.
+    """
+    if not meta:
+        return ""
+    raw = (
+        meta.get("title")
+        or meta.get("playlist_title")
+        or meta.get("album")
+        or ""
+    )
+    raw = str(raw).strip()
+    if not raw:
+        return ""
+    artist = _pick_artist_from_playlist_meta(meta)
+    if artist:
+        m = re.match(r"(?i)^Album\s*-\s*(.+)$", raw)
+        if m:
+            return f"{artist} - {m.group(1).strip()}"
+    return raw
+
+
+def _year_from_date_field(value):
+    """Wyciąga RRRR z YYYYMMDD, YYYY-MM-DD lub samego roku."""
+    if value is None:
+        return ""
+    s = str(value).strip()
+    if len(s) >= 4 and s[:4].isdigit():
+        try:
+            y = int(s[:4])
+            if 1900 <= y <= 2100:
+                return s[:4]
+        except ValueError:
+            pass
+    return ""
+
+
+def _pick_release_year_from_playlist_meta(meta):
+    """Rok wydania z metadanych playlisty / pierwszego utworu (yt-dlp)."""
+    if not meta:
+        return ""
+
+    def from_entry(entry):
+        if not isinstance(entry, dict):
+            return ""
+        for key in ("release_year", "year"):
+            v = entry.get(key)
+            if v is not None and str(v).strip().isdigit() and len(str(v).strip()) == 4:
+                y = int(str(v).strip())
+                if 1900 <= y <= 2100:
+                    return str(y)
+        for key in ("date", "release_date", "upload_date"):
+            y = _year_from_date_field(entry.get(key))
+            if y:
+                return y
+        return ""
+
+    for key in ("release_year", "year"):
+        v = meta.get(key)
+        if v is not None and str(v).strip().isdigit() and len(str(v).strip()) == 4:
+            y = int(str(v).strip())
+            if 1900 <= y <= 2100:
+                return str(y)
+    for key in ("date", "release_date"):
+        y = _year_from_date_field(meta.get(key))
+        if y:
+            return y
+
+    entries = meta.get("entries") or []
+    if entries:
+        y = from_entry(entries[0])
+        if y:
+            return y
+
+    for key in ("upload_date",):
+        y = _year_from_date_field(meta.get(key))
+        if y:
+            return y
+    return ""
+
+
+def format_album_folder_name(meta):
+    """Pełna nazwa podkatalogu: tytuł (+ opcjonalnie rok w nawiasie)."""
+    if not meta:
+        return ""
+    base = playlist_folder_display_title(meta)
+    if not base:
+        base = (meta.get("title") or meta.get("album") or "").strip()
+    year = _pick_release_year_from_playlist_meta(meta)
+    if year and base:
+        return f"{base} ({year})"
+    return base
+
+
+def resolve_album_playlist_url(album_query, source):
+    """
+    Wyszukaj album i zwróć (url_playlisty, nazwa_podkatalogu) do wsadowego pobrania,
+    albo None przy błędzie.
+    """
     if source == "ytm":
         if not album_query.startswith(("http://", "https://")):
             print("[ERROR] --source ytm nie obsługuje wyszukiwania tekstowego albumu.")
             print("Podaj bezpośredni URL albumu/playlisty z music.youtube.com.")
-            return []
+            return None
         parsed = urlparse(album_query)
         if parsed.netloc != "music.youtube.com":
             print("[ERROR] --source ytm akceptuje tylko URL-e z music.youtube.com.")
-            return []
+            return None
+        fallback = _fallback_title_from_playlist_url(album_query)
         try:
-            tracks_cmd = ["yt-dlp", "--flat-playlist", "--print", "url", album_query]
-            tracks_output = run_command(tracks_cmd)
-            urls = [u.strip() for u in tracks_output.split('\n') if u.strip()]
-            print(f"   >>> Znaleziono {len(urls)} utworów w albumie")
-            return urls
+            # -j na URL playlisty daje wiele linii JSON (1/utwór) i psuje json.loads; -J = jeden obiekt.
+            meta_cmd = ["yt-dlp", "-J", "--no-download", album_query]
+            meta_json = run_command(meta_cmd)
+            meta = json.loads(meta_json)
+            raw_title = format_album_folder_name(meta) or meta.get("title") or ""
+            subdir = safe_album_subdir_name(raw_title, fallback)
+            print(f"   >>> Katalog wyjściowy: .../{subdir}/")
         except Exception as e:
-            print(f"[ERROR] Nie udało się pobrać listy utworów z albumu: {format_noisy_floats(str(e))}")
-            return []
+            print(f"[WARN] Nie udało się odczytać tytułu playlisty: {format_noisy_floats(str(e))}")
+            subdir = safe_album_subdir_name("", fallback)
+            print(f"   >>> Katalog wyjściowy (fallback): .../{subdir}/")
+        return (album_query, subdir)
 
     search_prefix = SOURCE_MAP.get(source, "ytsearch1")
     search_term = f"{search_prefix}:{album_query}"
 
-    # Krok 1: Znajdź pierwszy wynik i pobierz metadane JSON
     print(f"   >>> Szukam albumu: '{album_query}' ({source})...")
     try:
         meta_cmd = ["yt-dlp", "-j", "--no-download", search_term]
@@ -248,30 +405,93 @@ def resolve_album_tracks(album_query, source):
         meta = json.loads(meta_json)
     except Exception as e:
         print(f"[ERROR] Nie udało się znaleźć albumu: {format_noisy_floats(str(e))}")
-        return []
+        return None
 
-    # Krok 2: Szukamy playlist_id (album na YT Music = playlist OLAK5uy_...)
     playlist_id = meta.get("playlist_id") or meta.get("playlist")
     album_name = meta.get("album", album_query)
 
     if not playlist_id:
         print(f"[ERROR] Nie znaleziono playlisty albumu dla: '{album_query}'")
         print("Spróbuj podać dokładniejszą nazwę albumu lub URL playlisty.")
-        return []
+        return None
 
     playlist_url = f"https://music.youtube.com/playlist?list={playlist_id}"
+    # Wynik -j to często pojedynczy utwór — tytuł filmu nie jest nazwą albumu; bierzemy album + artystę.
+    folder_meta = {
+        "title": album_name,
+        "album": album_name,
+        "artist": meta.get("artist") or meta.get("album_artist") or meta.get("uploader"),
+    }
+    merged = dict(meta)
+    merged.update(folder_meta)
+    display = format_album_folder_name(merged) or album_name
+    subdir = safe_album_subdir_name(display, album_query)
     print(f"   >>> Znaleziono album: '{album_name}' -> {playlist_url}")
+    print(f"   >>> Katalog wyjściowy: .../{subdir}/")
+    return (playlist_url, subdir)
 
-    # Krok 3: Pobierz URL-e wszystkich utworów z playlisty
+
+def download_album_playlist(playlist_url, dest_dir):
+    """Jedno wywołanie yt-dlp: cała playlista do katalogu dest_dir."""
+    dest_dir = Path(dest_dir)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    output_pattern = str(dest_dir / "%(playlist_index)02d_%(title)s.%(ext)s")
+    dl_cmd = [
+        "yt-dlp",
+        "-x", "--audio-format", "mp3",
+        "-f", "bestaudio",
+        "--audio-quality", "0",
+        "-o", output_pattern,
+        "--embed-thumbnail",
+        "--embed-metadata",
+        "--parse-metadata", YT_ALBUM_PARSE_METADATA,
+        "--restrict-filenames",
+        "--no-mtime",
+        playlist_url,
+    ]
+    run_command(dl_cmd, verbose=True)
+
+
+def list_album_mp3_files(dest_dir):
+    """Posortowane ścieżki mp3 z katalogu pobrania (prefiks NN_)."""
+    return sorted(Path(dest_dir).glob("*.mp3"))
+
+
+def process_album_playlist(playlist_url, args, output_dir, job_index, total_jobs, album_subdir_name):
+    """Pobierz playlistę wsadowo, potem Demucs dla każdego pliku jak dla pliku lokalnego."""
+    album_out_dir = output_dir / album_subdir_name
+    album_out_dir.mkdir(parents=True, exist_ok=True)
+
+    tmp_root = output_dir / ".yt-batch-album-tmp"
+    slug = hashlib.sha256(playlist_url.encode("utf-8")).hexdigest()[:16]
+    work_dir = tmp_root / f"album_{slug}"
+    if work_dir.exists():
+        shutil.rmtree(work_dir)
+    work_dir.mkdir(parents=True)
+
+    print(f"\n[{job_index}/{total_jobs}] Album (playlist): {playlist_url}")
+    print(f"   >>> Wyniki instrumentalne: {album_out_dir.resolve()}")
     try:
-        tracks_cmd = ["yt-dlp", "--flat-playlist", "--print", "url", playlist_url]
-        tracks_output = run_command(tracks_cmd)
-        urls = [u.strip() for u in tracks_output.split('\n') if u.strip()]
-        print(f"   >>> Znaleziono {len(urls)} utworów w albumie")
-        return urls
+        download_album_playlist(playlist_url, work_dir)
     except Exception as e:
-        print(f"[ERROR] Nie udało się pobrać listy utworów z albumu: {format_noisy_floats(str(e))}")
-        return []
+        print(f"[FAIL] Błąd pobierania albumu: {format_noisy_floats(str(e))}")
+        shutil.rmtree(work_dir, ignore_errors=True)
+        return
+
+    tracks = list_album_mp3_files(work_dir)
+    if not tracks:
+        print("[ERROR] Brak plików mp3 po pobraniu albumu.")
+        if not args.keep_original:
+            shutil.rmtree(work_dir, ignore_errors=True)
+        return
+
+    print(f"   >>> Pobrano {len(tracks)} utworów, separacja...")
+    for i, track_path in enumerate(tracks, 1):
+        print(f"\n   --- Utwór z albumu [{i}/{len(tracks)}]: {track_path.name} ---")
+        process_local_file(track_path, i, len(tracks), args, album_out_dir)
+
+    if not args.keep_original:
+        shutil.rmtree(work_dir, ignore_errors=True)
 
 def process_local_file(input_path, index, total, args, output_dir):
     """Separacja dla lokalnego pliku audio (bez pobierania). Obsługuje mp3, opus, m4a, wav, flac itd."""
@@ -481,28 +701,42 @@ def main():
             if f.is_file() and f.suffix.lower() in AUDIO_EXTENSIONS:
                 queue.append(str(f.resolve()))
 
-    # Rozwiązywanie albumów -> lista URL-i
+    album_jobs = []
     if args.album:
         for album_name in args.album:
-            track_urls = resolve_album_tracks(album_name, args.source)
-            queue.extend(track_urls)
+            resolved = resolve_album_playlist_url(album_name, args.source)
+            if resolved:
+                album_jobs.append(resolved)
 
-    if not queue:
+    if not queue and not album_jobs:
         parser.print_help()
         sys.exit(1)
+
+    total_jobs = len(queue) + len(album_jobs)
 
     device_info = get_demucs_device()
     device_msg = f"Device: {device_info}" if device_info else "Device: cpu (MPS niedostępne)"
     if not device_info and sys.platform == "darwin":
         device_msg += " — zobacz README sekcja Mac M1"
-    print(f"--- Start v4.0 | Utworów: {len(queue)} | Output: {out_path} | {device_msg} ---")
+    print(
+        f"--- Start v4.0 | Pozycji w kolejce: {total_jobs} "
+        f"(utworów/plików: {len(queue)}, albumów: {len(album_jobs)}) | "
+        f"Output: {out_path} | {device_msg} ---"
+    )
 
-    for idx, item in enumerate(queue, 1):
+    job_idx = 0
+    for item in queue:
+        job_idx += 1
         item_path = Path(item)
         if item_path.exists() and item_path.is_file():
-            process_local_file(item_path, idx, len(queue), args, out_path)
+            process_local_file(item_path, job_idx, total_jobs, args, out_path)
         else:
-            process_item(item, idx, len(queue), args, out_path)
+            process_item(item, job_idx, total_jobs, args, out_path)
+        print("-" * 60)
+
+    for playlist_url, album_subdir_name in album_jobs:
+        job_idx += 1
+        process_album_playlist(playlist_url, args, out_path, job_idx, total_jobs, album_subdir_name)
         print("-" * 60)
 
 if __name__ == "__main__":

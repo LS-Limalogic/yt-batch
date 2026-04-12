@@ -52,7 +52,7 @@ def test_main_dispatches_local_and_remote_items(tmp_path, monkeypatch, yt_batch_
     local = tmp_path / "local.mp3"
     local.write_text("x", encoding="utf-8")
 
-    calls = {"local": 0, "remote": 0}
+    calls = {"local": 0, "remote": 0, "album": 0}
     monkeypatch.setattr(yt_batch_module, "check_dependencies", lambda: None)
     monkeypatch.setattr(yt_batch_module, "check_python_runtime", lambda: None)
     monkeypatch.setattr(yt_batch_module, "get_demucs_device", lambda: "mps")
@@ -66,7 +66,19 @@ def test_main_dispatches_local_and_remote_items(tmp_path, monkeypatch, yt_batch_
         "process_item",
         lambda *args, **kwargs: calls.__setitem__("remote", calls["remote"] + 1),
     )
-    monkeypatch.setattr(yt_batch_module, "resolve_album_tracks", lambda *_args: ["https://youtube.com/from_album"])
+    monkeypatch.setattr(
+        yt_batch_module,
+        "resolve_album_playlist_url",
+        lambda *_args: (
+            "https://music.youtube.com/playlist?list=from_album",
+            "Test Album Dir",
+        ),
+    )
+    monkeypatch.setattr(
+        yt_batch_module,
+        "process_album_playlist",
+        lambda *_args, **kwargs: calls.__setitem__("album", calls["album"] + 1),
+    )
     monkeypatch.setattr(
         yt_batch_module.sys,
         "argv",
@@ -75,7 +87,8 @@ def test_main_dispatches_local_and_remote_items(tmp_path, monkeypatch, yt_batch_
 
     yt_batch_module.main()
     assert calls["local"] == 1
-    assert calls["remote"] == 2
+    assert calls["remote"] == 1
+    assert calls["album"] == 1
 
 
 def test_main_input_file_non_utf8_exits(tmp_path, monkeypatch, yt_batch_module):
