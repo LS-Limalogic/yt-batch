@@ -1,4 +1,5 @@
 import json
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -23,6 +24,28 @@ def test_check_dependencies_exits_when_missing_tools(monkeypatch, yt_batch_modul
 def test_check_dependencies_passes_when_all_tools_present(monkeypatch, yt_batch_module):
     monkeypatch.setattr(yt_batch_module.shutil, "which", lambda _tool: "/usr/bin/tool")
     yt_batch_module.check_dependencies()
+
+
+def test_cleanup_handler_removes_separated_and_album_tmp(tmp_path, monkeypatch, yt_batch_module):
+    tmp_root = tmp_path / "out"
+    tmp_root.mkdir()
+    album_tmp = tmp_root / ".yt-batch-album-tmp"
+    album_tmp.mkdir()
+    (album_tmp / "nested").mkdir()
+
+    separated = tmp_path / "separated"
+    separated.mkdir()
+
+    monkeypatch.setattr(yt_batch_module, "_cleanup_sigint_outdir", tmp_root)
+    monkeypatch.setattr(yt_batch_module.sys, "exit", lambda code: (_ for _ in ()).throw(SystemExit(code)))
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(SystemExit) as exc:
+        yt_batch_module.cleanup_handler(signal.SIGINT, None)
+
+    assert exc.value.code == 1
+    assert not album_tmp.exists()
+    assert not separated.exists()
 
 
 def test_check_python_runtime_passes(monkeypatch, yt_batch_module):

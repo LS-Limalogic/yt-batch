@@ -40,10 +40,18 @@ YT_COMMON_FLAGS = [
 # Pojedyncze pobranie całej playlisty (album): numeracja i osadzanie metadanych
 YT_ALBUM_PARSE_METADATA = "playlist_index:%(track_number)s"
 
+# Ustawiane w main() przed pętlą przetwarzania — SIGINT usuwa też tymczasowe pobrania albumów.
+_cleanup_sigint_outdir = None
+
+
 def cleanup_handler(signum, frame):
     """Obsługa przerwania Ctrl+C."""
+    global _cleanup_sigint_outdir
     print("\n\n!!! Przerwano przez użytkownika (SIGINT). Sprzątam i zamykam...")
     shutil.rmtree("separated", ignore_errors=True)
+    if _cleanup_sigint_outdir is not None:
+        album_tmp = _cleanup_sigint_outdir / ".yt-batch-album-tmp"
+        shutil.rmtree(album_tmp, ignore_errors=True)
     sys.exit(1)
 
 # Rejestracja sygnału
@@ -643,6 +651,8 @@ def process_item(query, index, total, args, output_dir):
         print(f"[WTF] Demucs zakończył pracę, ale nie widzę pliku: {source_stem}")
 
 def main():
+    global _cleanup_sigint_outdir
+
     check_dependencies()
     check_python_runtime()
     
@@ -718,6 +728,8 @@ def main():
         parser.print_help()
         sys.exit(1)
 
+    _cleanup_sigint_outdir = out_path.resolve()
+
     total_jobs = len(queue) + len(album_jobs)
 
     device_info = get_demucs_device()
@@ -744,6 +756,9 @@ def main():
         job_idx += 1
         process_album_playlist(playlist_url, args, out_path, job_idx, total_jobs, album_subdir_name)
         print("-" * 60)
+
+    _cleanup_sigint_outdir = None
+
 
 if __name__ == "__main__":
     main()
