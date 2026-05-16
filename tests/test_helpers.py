@@ -324,6 +324,23 @@ def test_format_album_folder_name_year_from_first_entry(yt_batch_module):
     assert out == "Radiohead - OK Computer (1997)"
 
 
+def test_yt_dlp_cookies_args_empty_when_unset(yt_batch_module):
+    assert yt_batch_module.yt_dlp_cookies_args(None) == []
+    assert yt_batch_module.yt_dlp_cookies_args("") == []
+    assert yt_batch_module.yt_dlp_cookies_args("   ") == []
+
+
+def test_yt_dlp_cookies_args_when_set(yt_batch_module):
+    assert yt_batch_module.yt_dlp_cookies_args("chrome") == [
+        "--cookies-from-browser",
+        "chrome",
+    ]
+    assert yt_batch_module.yt_dlp_cookies_args("chrome:Default") == [
+        "--cookies-from-browser",
+        "chrome:Default",
+    ]
+
+
 def test_pick_release_year_empty_when_missing(yt_batch_module):
     assert yt_batch_module._pick_release_year_from_playlist_meta({}) == ""
 
@@ -331,7 +348,7 @@ def test_pick_release_year_empty_when_missing(yt_batch_module):
 def test_download_album_playlist_builds_expected_cmd(monkeypatch, yt_batch_module, tmp_path):
     captured = {}
 
-    def fake_run_command(cmd, verbose=False):
+    def fake_run_command(cmd, verbose=False, check=True, env_overrides=None):
         captured["cmd"] = cmd
         return ""
 
@@ -340,12 +357,50 @@ def test_download_album_playlist_builds_expected_cmd(monkeypatch, yt_batch_modul
     yt_batch_module.download_album_playlist("https://music.youtube.com/playlist?list=X", dest)
     cmd = captured["cmd"]
     assert cmd[0] == "yt-dlp"
+    assert "--ignore-errors" in cmd
     assert "--embed-thumbnail" in cmd
     assert "--embed-metadata" in cmd
     assert "--parse-metadata" in cmd
     assert yt_batch_module.YT_ALBUM_PARSE_METADATA in cmd
     assert str(dest / "%(playlist_index)02d_%(title)s.%(ext)s") in cmd
     assert cmd[-1] == "https://music.youtube.com/playlist?list=X"
+
+
+def test_download_album_playlist_passes_cookies_to_yt_dlp(monkeypatch, yt_batch_module, tmp_path):
+    captured = {}
+
+    def fake_run_command(cmd, verbose=False, check=True, env_overrides=None):
+        captured["cmd"] = cmd
+        return ""
+
+    monkeypatch.setattr(yt_batch_module, "run_command", fake_run_command)
+    dest = tmp_path / "dl"
+    yt_batch_module.download_album_playlist(
+        "https://music.youtube.com/playlist?list=X",
+        dest,
+        cookies_from_browser="chrome",
+    )
+    cmd = captured["cmd"]
+    i = cmd.index("--cookies-from-browser")
+    assert cmd[i + 1] == "chrome"
+    assert cmd.index("--ignore-errors") > i
+
+
+def test_resolve_album_playlist_url_yt_inserts_cookies(monkeypatch, yt_batch_module):
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return json.dumps({"playlist_id": "PL123", "album": "My Album"})
+
+    monkeypatch.setattr(yt_batch_module, "run_command", fake_run)
+    url, subdir = yt_batch_module.resolve_album_playlist_url(
+        "album", "yt", cookies_from_browser="chrome"
+    )
+    assert url == "https://music.youtube.com/playlist?list=PL123"
+    assert subdir
+    assert "--cookies-from-browser" in captured["cmd"]
+    assert captured["cmd"][captured["cmd"].index("--cookies-from-browser") + 1] == "chrome"
 
 
 def test_resolve_ytmusic_url_prefers_song(monkeypatch, yt_batch_module):

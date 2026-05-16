@@ -1,2 +1,8 @@
 output/
 demucs_models/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python

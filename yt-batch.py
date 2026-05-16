@@ -40,6 +40,17 @@ YT_COMMON_FLAGS = [
 # Pojedyncze pobranie całej playlisty (album): numeracja i osadzanie metadanych
 YT_ALBUM_PARSE_METADATA = "playlist_index:%(track_number)s"
 
+
+def yt_dlp_cookies_args(cookies_from_browser):
+    """Fragment argv dla yt-dlp --cookies-from-browser (np. chrome, firefox:Profil)."""
+    if cookies_from_browser is None:
+        return []
+    s = str(cookies_from_browser).strip()
+    if not s:
+        return []
+    return ["--cookies-from-browser", s]
+
+
 # Ustawiane w main() przed pętlą przetwarzania — SIGINT usuwa też tymczasowe pobrania albumów.
 _cleanup_sigint_outdir = None
 
@@ -110,7 +121,7 @@ def format_noisy_floats(text):
     return FLOAT_NOISE_RE.sub(_round, text)
 
 
-def run_command(cmd, verbose=False, env_overrides=None):
+def run_command(cmd, verbose=False, env_overrides=None, check=True):
     """Wrapper na subprocess z lepszą obsługą błędów."""
     try:
         # Konwersja wszystkich elementów komendy na stringi (bezpieczeństwo typów)
@@ -137,12 +148,19 @@ def run_command(cmd, verbose=False, env_overrides=None):
             return_code = process.wait()
             if return_code != 0:
                 joined_output = "\n".join(full_output)
-                raise subprocess.CalledProcessError(return_code, cmd_str, stderr=joined_output)
+                if check:
+                    raise subprocess.CalledProcessError(
+                        return_code, cmd_str, stderr=joined_output
+                    )
+                print(
+                    f"[WARN] Komenda zakończona kodem {return_code} "
+                    "(powyżej mogą być pominięte pozycje playlisty / błędy pobrania)."
+                )
             return ""
 
         result = subprocess.run(
             cmd_str,
-            check=True,
+            check=check,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -374,7 +392,7 @@ def format_album_folder_name(meta):
     return base
 
 
-def resolve_album_playlist_url(album_query, source):
+def resolve_album_playlist_url(album_query, source, cookies_from_browser=None):
     """
     Wyszukaj album i zwróć (url_playlisty, nazwa_podkatalogu) do wsadowego pobrania,
     albo None przy błędzie.
@@ -391,7 +409,11 @@ def resolve_album_playlist_url(album_query, source):
         fallback = _fallback_title_from_playlist_url(album_query)
         try:
             # -j na URL playlisty daje wiele linii JSON (1/utwór) i psuje json.loads; -J = jeden obiekt.
-            meta_cmd = ["yt-dlp", "-J", "--no-download", album_query]
+            meta_cmd = (
+                ["yt-dlp"]
+                + yt_dlp_cookies_args(cookies_from_browser)
+                + ["-J", "--no-download", album_query]
+            )
             meta_json = run_command(meta_cmd)
             meta = json.loads(meta_json)
             raw_title = format_album_folder_name(meta) or meta.get("title") or ""
@@ -408,7 +430,11 @@ def resolve_album_playlist_url(album_query, source):
 
     print(f"   >>> Szukam albumu: '{album_query}' ({source})...")
     try:
-        meta_cmd = ["yt-dlp", "-j", "--no-download", search_term]
+        meta_cmd = (
+            ["yt-dlp"]
+            + yt_dlp_cookies_args(cookies_from_browser)
+            + ["-j", "--no-download", search_term]
+        )
         meta_json = run_command(meta_cmd)
         meta = json.loads(meta_json)
     except Exception as e:
@@ -439,13 +465,15 @@ def resolve_album_playlist_url(album_query, source):
     return (playlist_url, subdir)
 
 
-def download_album_playlist(playlist_url, dest_dir):
+def download_album_playlist(playlist_url, dest_dir, cookies_from_browser=None):
     """Jedno wywołanie yt-dlp: cała playlista do katalogu dest_dir."""
     dest_dir = Path(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
     output_pattern = str(dest_dir / "%(playlist_index)02d_%(title)s.%(ext)s")
     dl_cmd = [
         "yt-dlp",
+    ] + yt_dlp_cookies_args(cookies_from_browser) + [
+        "--ignore-errors",
         "-x", "--audio-format", "mp3",
         "-f", "bestaudio",
         "--audio-quality", "0",
@@ -457,7 +485,8 @@ def download_album_playlist(playlist_url, dest_dir):
         "--no-mtime",
         playlist_url,
     ]
-    run_command(dl_cmd, verbose=True)
+    # Playlisty często zawierają pozycje niedostępne (wiek, region) — yt-dlp i tak zwraca kod != 0.
+    run_command(dl_cmd, verbose=True, check=False)
 
 
 def list_album_mp3_files(dest_dir):
@@ -480,7 +509,9 @@ def process_album_playlist(playlist_url, args, output_dir, job_index, total_jobs
     print(f"\n[{job_index}/{total_jobs}] Album (playlist): {playlist_url}")
     print(f"   >>> Wyniki instrumentalne: {album_out_dir.resolve()}")
     try:
-        download_album_playlist(playlist_url, work_dir)
+        download_album_playlist(
+            playlist_url, work_dir, getattr(args, "cookies_from_browser", None)
+        )
     except Exception as e:
         print(f"[FAIL] Błąd pobierania albumu: {format_noisy_floats(str(e))}")
         shutil.rmtree(work_dir, ignore_errors=True)
@@ -569,10 +600,17 @@ def process_item(query, index, total, args, output_dir):
         dl_source = query
 
     selected_model = resolve_model(args.model)
-    
+    cookie_spec = getattr(args, "cookies_from_browser", None)
+
     # 1. Pobieranie Metadanych (Nazwa pliku)
     try:
-        name_cmd = ["yt-dlp", "--get-filename"] + YT_COMMON_FLAGS + ["-x", "--audio-format", "mp3", dl_source]
+        name_cmd = (
+            ["yt-dlp"]
+            + yt_dlp_cookies_args(cookie_spec)
+            + ["--get-filename"]
+            + YT_COMMON_FLAGS
+            + ["-x", "--audio-format", "mp3", dl_source]
+        )
         filename = run_command(name_cmd)
         base_name = Path(filename).stem
         input_mp3 = Path(f"{base_name}.mp3")
@@ -592,12 +630,17 @@ def process_item(query, index, total, args, output_dir):
     if not input_mp3.exists():
         print(f"   >>> Pobieranie źródła ({args.quality}kbps)...")
         try:
-            dl_cmd = [
-                "yt-dlp", 
-                "-x", "--audio-format", "mp3", 
-                "-f", "bestaudio",
-                "--audio-quality", "0"
-            ] + YT_COMMON_FLAGS + [dl_source]
+            dl_cmd = (
+                ["yt-dlp"]
+                + yt_dlp_cookies_args(cookie_spec)
+                + [
+                    "-x", "--audio-format", "mp3",
+                    "-f", "bestaudio",
+                    "--audio-quality", "0",
+                ]
+                + YT_COMMON_FLAGS
+                + [dl_source]
+            )
             
             run_command(dl_cmd, verbose=True)
             
@@ -681,6 +724,12 @@ def main():
         choices=["ytm", "yt"],
         help="Źródło: ytm=YouTube Music search (domyślne), yt=YouTube search",
     )
+    parser.add_argument(
+        "--cookies-from-browser",
+        metavar="BROWSER",
+        default=None,
+        help="Przekazuje do yt-dlp --cookies-from-browser (np. chrome). Pomaga przy age-gate, gdy jesteś zalogowany w tej przeglądarce.",
+    )
 
     args = parser.parse_args()
 
@@ -720,7 +769,9 @@ def main():
     album_jobs = []
     if args.album:
         for album_name in args.album:
-            resolved = resolve_album_playlist_url(album_name, args.source)
+            resolved = resolve_album_playlist_url(
+                album_name, args.source, args.cookies_from_browser
+            )
             if resolved:
                 album_jobs.append(resolved)
 
