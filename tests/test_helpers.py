@@ -167,8 +167,15 @@ def test_parse_progress_line_normalizes_bar_and_numbers(yt_batch_module):
     line = " 53%|███████████▏     | 117.0/222.3 [00:06<00:05, 19.17seconds/s]"
     percent, formatted = yt_batch_module.parse_progress_line(line)
     assert percent == 53
-    assert formatted == f" 53%|{'█' * 21}{' ' * 19}| 117/222s [00:06<00:05]"
+    assert formatted == f" 53%|{'█' * 21}{' ' * 19}| 117/222s [19.2s/s]"
     assert yt_batch_module.parse_progress_line("zwykla linia logu") is None
+
+
+def test_parse_progress_line_handles_unknown_rate(yt_batch_module):
+    line = "  0%|          | 0.0/222.3 [00:00<?, ?seconds/s]"
+    percent, formatted = yt_batch_module.parse_progress_line(line)
+    assert percent == 0
+    assert formatted.endswith("| 0/222s [?s/s]")
 
 
 def test_run_command_verbose_throttles_progress_lines(monkeypatch, yt_batch_module, capsys):

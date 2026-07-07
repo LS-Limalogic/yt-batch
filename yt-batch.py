@@ -110,15 +110,18 @@ def check_python_runtime():
 FLOAT_NOISE_RE = re.compile(r"(?<![\w.])(\d+\.\d{3,})(?![\w.])")
 
 # Linia postępu tqdm (Demucs), np. " 53%|███...| 117.0/222.3 [00:06<00:05, 19.17seconds/s]"
-PROGRESS_LINE_RE = re.compile(r"^\s*(\d+)%\|.*\|\s*([\d.]+)/([\d.]+)\s*\[([^<\]]+)<([^,\]]+)")
+PROGRESS_LINE_RE = re.compile(
+    r"^\s*(\d+)%\|.*\|\s*([\d.]+)/([\d.]+)\s*\[[^,\]]+,\s*([\d.]+|\?)[a-z]*/s\]"
+)
 PROGRESS_BAR_WIDTH = 40
 PROGRESS_STEP_PERCENT = 10
 
 
 def parse_progress_line(line):
     """
-    Przerysowuje linię postępu tqdm: stała szerokość paska, liczby zaokrąglone do całości.
-    Zwraca (procent, sformatowana_linia) albo None, gdy to nie jest linia postępu.
+    Przerysowuje linię postępu tqdm: stała szerokość paska, liczby zaokrąglone,
+    prędkość przetwarzania zamiast czasów. Zwraca (procent, sformatowana_linia)
+    albo None, gdy to nie jest linia postępu.
     """
     m = PROGRESS_LINE_RE.match(line)
     if not m:
@@ -128,9 +131,9 @@ def parse_progress_line(line):
     total = round(float(m.group(3)))
     filled = round(PROGRESS_BAR_WIDTH * percent / 100)
     bar = "█" * filled + " " * (PROGRESS_BAR_WIDTH - filled)
-    elapsed = m.group(4).strip()
-    eta = m.group(5).strip()
-    return percent, f"{percent:3d}%|{bar}| {current}/{total}s [{elapsed}<{eta}]"
+    rate = m.group(4)
+    speed = "?" if rate == "?" else f"{float(rate):.1f}"
+    return percent, f"{percent:3d}%|{bar}| {current}/{total}s [{speed}s/s]"
 
 
 def format_noisy_floats(text):
