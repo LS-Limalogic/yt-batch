@@ -109,6 +109,29 @@ def check_python_runtime():
 
 FLOAT_NOISE_RE = re.compile(r"(?<![\w.])(\d+\.\d{3,})(?![\w.])")
 
+# Linia postępu tqdm (Demucs), np. " 53%|███...| 117.0/222.3 [00:06<00:05, 19.17seconds/s]"
+PROGRESS_LINE_RE = re.compile(r"^\s*(\d+)%\|.*\|\s*([\d.]+)/([\d.]+)\s*\[([^<\]]+)<([^,\]]+)")
+PROGRESS_BAR_WIDTH = 40
+PROGRESS_STEP_PERCENT = 10
+
+
+def parse_progress_line(line):
+    """
+    Przerysowuje linię postępu tqdm: stała szerokość paska, liczby zaokrąglone do całości.
+    Zwraca (procent, sformatowana_linia) albo None, gdy to nie jest linia postępu.
+    """
+    m = PROGRESS_LINE_RE.match(line)
+    if not m:
+        return None
+    percent = min(int(m.group(1)), 100)
+    current = round(float(m.group(2)))
+    total = round(float(m.group(3)))
+    filled = round(PROGRESS_BAR_WIDTH * percent / 100)
+    bar = "█" * filled + " " * (PROGRESS_BAR_WIDTH - filled)
+    elapsed = m.group(4).strip()
+    eta = m.group(5).strip()
+    return percent, f"{percent:3d}%|{bar}| {current}/{total}s [{elapsed}<{eta}]"
+
 
 def format_noisy_floats(text):
     """Ucina długie rozwinięcia floatów (np. 17.549999999999997 -> 17.5)."""
@@ -141,8 +164,21 @@ def run_command(cmd, verbose=False, env_overrides=None, check=True):
                 env=env
             )
             full_output = []
+            last_progress = -PROGRESS_STEP_PERCENT
             for line in process.stdout:
                 clean_line = format_noisy_floats(line.rstrip("\n"))
+                progress = parse_progress_line(clean_line)
+                if progress is not None:
+                    percent, formatted = progress
+                    if percent < last_progress:
+                        # Nowy pasek (np. kolejny model z bag-of-models)
+                        last_progress = -PROGRESS_STEP_PERCENT
+                    if percent == last_progress or (
+                        percent != 100 and percent < last_progress + PROGRESS_STEP_PERCENT
+                    ):
+                        continue
+                    last_progress = percent
+                    clean_line = formatted
                 full_output.append(clean_line)
                 print(clean_line)
             return_code = process.wait()

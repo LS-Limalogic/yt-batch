@@ -163,6 +163,35 @@ def test_run_command_verbose_formats_noisy_float_output(monkeypatch, yt_batch_mo
     assert "327.6/327.6" in output
 
 
+def test_parse_progress_line_normalizes_bar_and_numbers(yt_batch_module):
+    line = " 53%|███████████▏     | 117.0/222.3 [00:06<00:05, 19.17seconds/s]"
+    percent, formatted = yt_batch_module.parse_progress_line(line)
+    assert percent == 53
+    assert formatted == f" 53%|{'█' * 21}{' ' * 19}| 117/222s [00:06<00:05]"
+    assert yt_batch_module.parse_progress_line("zwykla linia logu") is None
+
+
+def test_run_command_verbose_throttles_progress_lines(monkeypatch, yt_batch_module, capsys):
+    lines = [
+        f" {p}%|██| {p * 2.223:.2f}/222.3 [00:0{p // 20}<00:05, 19.17seconds/s]\n"
+        for p in (50, 53, 55, 61, 100, 100)
+    ]
+
+    class FakeProcess:
+        def __init__(self):
+            self.stdout = iter(lines)
+
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr(
+        yt_batch_module.subprocess, "Popen", lambda *_a, **_k: FakeProcess()
+    )
+    yt_batch_module.run_command(["dummy"], verbose=True)
+    out_lines = capsys.readouterr().out.splitlines()
+    assert [l[:4] for l in out_lines] == [" 50%", " 61%", "100%"]
+
+
 def test_run_command_raises_runtime_error_for_stderr(monkeypatch, yt_batch_module):
     def fake_run(*_args, **_kwargs):
         raise subprocess.CalledProcessError(1, "x", stderr="failure")
