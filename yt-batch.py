@@ -102,8 +102,8 @@ def check_python_runtime():
         for error in runtime_errors:
             print(f"- {error}")
         print("\nSzybka naprawa:")
-        print("1) Przeinstaluj Python (pyenv), np. pyenv uninstall 3.13.0 && pyenv install 3.13.0")
-        print("2) Doinstaluj zależności: python3 -m pip install --upgrade pip numpy")
+        print("1) Upewnij się, że venv jest aktywny: source .venv/bin/activate")
+        print("2) Jeśli venv jest uszkodzony, odtwórz go: rm -rf .venv && uv venv && uv pip install numpy yt-dlp demucs ytmusicapi pytest")
         print("3) Sprawdź: python3 -c \"import hashlib, numpy; hashlib.blake2b(b'x')\"")
         sys.exit(1)
 

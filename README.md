@@ -17,22 +17,40 @@ System musi posiadać zainstalowane w `$PATH`:
 - **NVIDIA:** Zainstalowane sterowniki CUDA + PyTorch w wersji CUDA.
 - **MacOS (M1/M2/M3):** MPS (Metal) — skrypt automatycznie używa `-d mps` gdy dostępne. **Ważne:** PyTorch musi być wersja z MPS (nie CPU-only). Jeśli skrypt pokazuje "Device: cpu" na Apple Silicon, wykonaj:
     ```bash
-    pip install --upgrade torch torchaudio
+    uv pip install --upgrade torch torchaudio
     ```
     Nie używaj `--extra-index-url https://download.pytorch.org/whl/cpu` — to instaluje wersję bez MPS.
 
 ## 🚀 Instalacja
 
+### MacOS (uv)
+
 ```bash
-# 1. Sklonuj repozytorium lub pobierz skrypt
-# 2. Zainstaluj zależności Pythona
-pip install yt-dlp demucs ytmusicapi pytest
+# 1. Zależności systemowe
+brew install ffmpeg uv
 
-# 3. Zainstaluj ffmpeg (Ubuntu)
+# 2. Środowisko Pythona (uv odczyta wersję z .python-version)
+cd yt-batch
+uv venv
+
+# 3. Zależności Pythona
+uv pip install numpy yt-dlp demucs ytmusicapi pytest
+
+# 4. Aktywacja (yt-dlp i demucs muszą być w PATH)
+source .venv/bin/activate
+
+# 5. Weryfikacja
+python -c "import torch; print('MPS:', torch.backends.mps.is_available())"  # True na Apple Silicon
+python -m pytest -q
+```
+
+Zamiast aktywacji venv można używać `uv run`, np. `uv run pytest -q` lub `uv run python yt-batch.py "..."`.
+
+### Linux (pip)
+
+```bash
 sudo apt update && sudo apt install ffmpeg
-
-# 3. Zainstaluj ffmpeg (MacOS)
-brew install ffmpeg
+pip install numpy yt-dlp demucs ytmusicapi pytest
 ```
 
 ## ✅ Testy jednostkowe
@@ -58,6 +76,17 @@ python3 -m pytest -q tests/test_main_cli.py
 ```
 
 ## 💻 Użycie
+
+Skrypt można uruchomić na dwa sposoby:
+
+```bash
+# Opcja 1: z aktywnym venv
+source .venv/bin/activate
+python3 yt-batch.py "Nazwa Utworu"
+
+# Opcja 2: bez aktywacji, przez uv
+uv run python yt-batch.py "Nazwa Utworu"
+```
 
 Podstawowe wywołanie (domyślnie szuka w YouTube Music, pobiera, separuje, zapisuje w ./output):
 
@@ -128,4 +157,4 @@ Demucs korzysta z ffmpeg i obsługuje m.in.: **mp3**, **opus**, **m4a**, **m4b**
 - **Błąd CUDA out of memory:** Użyj modelu 3 (mdx_extra_q) lub ustaw zmienną środowiskową `PYTORCH_NO_CUDA_MEMORY_CACHING=1`.
 - **Prędkość:** Na samym CPU proces trwa ok. 1-2 minuty na utwór. Na GPU/Metal - sekundy.
 - **Mac M1 nadal CPU:** Zweryfikuj: `python3 -c "import torch; print('MPS:', torch.backends.mps.is_available())"`. Jeśli `False`, przeinstaluj PyTorch (patrz sekcja Akceleracja).
-- **`unsupported hash type blake2b/blake2s` lub `No module named 'numpy'`:** to uszkodzone/niekompletne środowisko Pythona. Napraw: `pyenv uninstall 3.13.0 && pyenv install 3.13.0`, potem `python3 -m pip install --upgrade pip numpy`, a na końcu weryfikacja `python3 -c "import hashlib, numpy; hashlib.blake2b(b'x')"`.
+- **`unsupported hash type blake2b/blake2s` lub `No module named 'numpy'`:** to uszkodzone/niekompletne środowisko Pythona. Napraw przez odtworzenie venv: `rm -rf .venv && uv venv && uv pip install numpy yt-dlp demucs ytmusicapi pytest`, a na końcu weryfikacja `python3 -c "import hashlib, numpy; hashlib.blake2b(b'x')"`.
