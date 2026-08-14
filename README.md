@@ -126,8 +126,9 @@ python3 yt-batch.py -f ./moje-pliki-audio
 - **`--source ytm`:** podaj **URL** playlisty lub albumu z `music.youtube.com` (wyszukiwanie samej frazy tekstowej albumu nie jest obsługiwane).
 - **`--source yt`:** podaj **nazwę albumu** — z pierwszego wyniku wyszukiwania wybierana jest playlista YouTube Music powiązana z albumem.
 - Cała playlista jest pobierana **jednym** wywołaniem `yt-dlp` (numeracja plików `01_…`, osadzanie miniatury i metadanych), następnie każdy utwór przechodzi przez Demucs.
+- Utwory, które padły na błąd przejściowy (typowo HTTP 403), są dobierane w **kolejnych przebiegach** (do 3). Dzięki `--download-archive` kolejny przebieg pomija to, co już się udało. Jeśli po wszystkich przebiegach czegoś brakuje, skrypt wypisuje ostrzeżenie `Pobrano X/Y utworów` — braki nie przechodzą po cichu.
 - Instrumentale zapisywane są w **podkatalogu** katalogu docelowego (`--outdir`). Nazwa folderu pochodzi z metadanych: typowy wzorzec tytułu „Album - …” jest zamieniany na **„Artysta - …”**, jeśli artysta jest dostępny w metadanych; na końcu dodawany jest **rok wydania** w nawiasie `(RRRR)`, gdy yt-dlp zwróci datę / rok.
-- Pobrane pliki źródłowe trzymane są w `{outdir}/.yt-batch-album-tmp/`. Bez `--keep-original` katalog tymczasowy dla danego albumu jest usuwany po przetworzeniu.
+- Pobrane pliki źródłowe trzymane są w `{outdir}/.yt-batch-album-tmp/` (razem z `.yt-dlp-archive.txt`, które steruje pomijaniem przy kolejnych przebiegach). Bez `--keep-original` katalog tymczasowy dla danego albumu jest usuwany po przetworzeniu.
 
 ## 📂 Struktura Wyjściowa
 
@@ -137,7 +138,10 @@ Skrypt automatycznie zarządza plikami tymczasowymi.
 
 ```
 {outdir}/Nazwa_Piosenki-no-vocals.mp3
+{outdir}/Nazwa_Piosenki.mp3          # tylko z -k (plik źródłowy z wokalem)
 ```
+
+Pliki robocze Demucsa lądują w katalogu tymczasowym systemu i są usuwane także po błędzie lub Ctrl+C — nic nie zostaje w katalogu, z którego uruchomiono skrypt.
 
 **Album (`-a`):**
 
@@ -153,6 +157,7 @@ Demucs korzysta z ffmpeg i obsługuje m.in.: **mp3**, **opus**, **m4a**, **m4b**
 
 ## 🐛 Rozwiązywanie problemów
 
+- **`HTTP Error 403: Forbidden` przy pobieraniu:** znany problem YouTube — jedyny klient odtwarzacza działający bez tokenu PO (`android_vr`) sporadycznie odrzuca żądanie. Skrypt sam ponawia wywołanie (do 4 prób), więc zwykle wystarczy poczekać. Gdy 403 wraca uporczywie: użyj `--cookies-from-browser chrome` albo zainstaluj provider tokenów PO ([`bgutil-ytdlp-pot-provider`](https://github.com/Brainicism/bgutil-ytdlp-pot-provider)). Podnoszenie `--retries` w samym `yt-dlp` tu nie pomaga — ponowić trzeba całe wywołanie, żeby wymusić świeżą ekstrakcję adresów strumienia.
 - **Błąd ffmpeg not found:** Zainstaluj ffmpeg w systemie, nie przez pip.
 - **Błąd CUDA out of memory:** Użyj modelu 3 (mdx_extra_q) lub ustaw zmienną środowiskową `PYTORCH_NO_CUDA_MEMORY_CACHING=1`.
 - **Prędkość:** Na samym CPU proces trwa ok. 1-2 minuty na utwór. Na GPU/Metal - sekundy.

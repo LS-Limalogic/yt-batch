@@ -15,6 +15,14 @@ def yt_batch_module():
     return module
 
 
+@pytest.fixture(autouse=True)
+def no_retry_sleep(yt_batch_module, monkeypatch):
+    """Retry ma realny backoff — w testach zbieramy same opóźnienia zamiast czekać."""
+    delays = []
+    monkeypatch.setattr(yt_batch_module, "_sleep", delays.append)
+    return delays
+
+
 @pytest.fixture
 def args_factory():
     def make_args(**overrides):

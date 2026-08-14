@@ -26,15 +26,16 @@ def test_check_dependencies_passes_when_all_tools_present(monkeypatch, yt_batch_
     yt_batch_module.check_dependencies()
 
 
-def test_cleanup_handler_removes_separated_and_album_tmp(tmp_path, monkeypatch, yt_batch_module):
+def test_cleanup_handler_removes_workdirs_and_album_tmp(tmp_path, monkeypatch, yt_batch_module):
     tmp_root = tmp_path / "out"
     tmp_root.mkdir()
     album_tmp = tmp_root / ".yt-batch-album-tmp"
     album_tmp.mkdir()
     (album_tmp / "nested").mkdir()
 
-    separated = tmp_path / "separated"
-    separated.mkdir()
+    work_dir = tmp_path / "demucs-work"
+    (work_dir / "htdemucs").mkdir(parents=True)
+    yt_batch_module._active_demucs_dirs.add(work_dir)
 
     monkeypatch.setattr(yt_batch_module, "_cleanup_sigint_outdir", tmp_root)
     monkeypatch.setattr(yt_batch_module.sys, "exit", lambda code: (_ for _ in ()).throw(SystemExit(code)))
@@ -45,7 +46,20 @@ def test_cleanup_handler_removes_separated_and_album_tmp(tmp_path, monkeypatch, 
 
     assert exc.value.code == 1
     assert not album_tmp.exists()
-    assert not separated.exists()
+    assert not work_dir.exists()
+
+
+def test_demucs_workdir_removes_dir_on_exception(yt_batch_module):
+    captured = {}
+    with pytest.raises(RuntimeError):
+        with yt_batch_module.demucs_workdir() as work_dir:
+            captured["path"] = work_dir
+            assert work_dir.exists()
+            assert work_dir in yt_batch_module._active_demucs_dirs
+            raise RuntimeError("boom")
+
+    assert not captured["path"].exists()
+    assert yt_batch_module._active_demucs_dirs == set()
 
 
 def test_check_python_runtime_passes(monkeypatch, yt_batch_module):
@@ -381,6 +395,92 @@ def test_pick_release_year_empty_when_missing(yt_batch_module):
     assert yt_batch_module._pick_release_year_from_playlist_meta({}) == ""
 
 
+def _called_process_error(output):
+    """CalledProcessError taki, jaki produkuje run_command(verbose=True): treść w .stderr."""
+    return subprocess.CalledProcessError(1, ["yt-dlp"], stderr=output)
+
+
+def test_is_retryable_error_detects_403_hidden_in_stderr(yt_batch_module):
+    # str(CalledProcessError) zawiera tylko kod wyjścia — 403 jest wyłącznie w .stderr.
+    exc = _called_process_error("ERROR: unable to download video data: HTTP Error 403: Forbidden")
+    assert "403" not in str(exc)
+    assert yt_batch_module.is_retryable_error(exc) is True
+
+
+def test_is_retryable_error_false_for_permanent_failures(yt_batch_module):
+    permanent = [
+        "ERROR: [youtube] x: Requested format is not available",
+        "WARNING: This video is drm protected",
+        "ERROR: [youtube] x: Private video. Sign in if you've been granted access",
+        "ERROR: [youtube] x: Video unavailable",
+    ]
+    for output in permanent:
+        assert yt_batch_module.is_retryable_error(_called_process_error(output)) is False
+
+
+def test_is_retryable_error_true_for_unknown_failures(yt_batch_module):
+    # Domyślnie ponawiamy — nieznany błąd sieciowy nie może wypaść z retry.
+    assert yt_batch_module.is_retryable_error(RuntimeError("Connection reset by peer")) is True
+
+
+def test_run_with_retries_recovers_after_403(yt_batch_module, monkeypatch, capsys):
+    attempts = []
+    delays = []
+
+    def flaky(cmd, verbose=False):
+        attempts.append(cmd)
+        if len(attempts) < 3:
+            raise _called_process_error("ERROR: unable to download video data: HTTP Error 403: Forbidden")
+        return "ok"
+
+    monkeypatch.setattr(yt_batch_module, "run_command", flaky)
+    result = yt_batch_module.run_with_retries(
+        ["yt-dlp", "x"], label="Pobieranie", sleep=delays.append, verbose=True
+    )
+
+    assert result == "ok"
+    assert len(attempts) == 3
+    assert delays == [
+        yt_batch_module.DOWNLOAD_RETRY_BASE_DELAY,
+        yt_batch_module.DOWNLOAD_RETRY_BASE_DELAY * 2,
+    ]
+    assert "[RETRY] Pobieranie: próba 1/4" in capsys.readouterr().out
+
+
+def test_run_with_retries_gives_up_after_all_attempts(yt_batch_module, monkeypatch):
+    attempts = []
+
+    def always_403(cmd, verbose=False):
+        attempts.append(cmd)
+        raise _called_process_error("ERROR: HTTP Error 403: Forbidden")
+
+    monkeypatch.setattr(yt_batch_module, "run_command", always_403)
+    with pytest.raises(subprocess.CalledProcessError):
+        yt_batch_module.run_with_retries(["yt-dlp", "x"], sleep=lambda _s: None)
+
+    assert len(attempts) == yt_batch_module.DOWNLOAD_RETRY_ATTEMPTS
+
+
+def test_run_with_retries_does_not_retry_permanent_error(yt_batch_module, monkeypatch):
+    attempts = []
+
+    def drm(cmd, verbose=False):
+        attempts.append(cmd)
+        raise _called_process_error("ERROR: Requested format is not available")
+
+    monkeypatch.setattr(yt_batch_module, "run_command", drm)
+    with pytest.raises(subprocess.CalledProcessError):
+        yt_batch_module.run_with_retries(["yt-dlp", "x"], sleep=lambda _s: None)
+
+    assert len(attempts) == 1
+
+
+def test_yt_output_args_targets_output_dir(yt_batch_module, tmp_path):
+    args = yt_batch_module.yt_output_args(tmp_path / "out")
+    assert args == ["-o", str(tmp_path / "out" / "%(title)s.%(ext)s")]
+    assert "-o" not in yt_batch_module.YT_COMMON_FLAGS
+
+
 def test_download_album_playlist_builds_expected_cmd(monkeypatch, yt_batch_module, tmp_path):
     captured = {}
 
@@ -420,6 +520,173 @@ def test_download_album_playlist_passes_cookies_to_yt_dlp(monkeypatch, yt_batch_
     i = cmd.index("--cookies-from-browser")
     assert cmd[i + 1] == "chrome"
     assert cmd.index("--ignore-errors") > i
+
+
+def test_download_album_playlist_uses_archive_for_repeat_passes(monkeypatch, yt_batch_module, tmp_path):
+    dest = tmp_path / "dl"
+    passes = []
+
+    def fake_run_command(cmd, verbose=False, check=True, env_overrides=None):
+        if "--flat-playlist" in cmd:
+            return json.dumps({"entries": [{"id": "a"}, {"id": "b"}, {"id": "c"}]})
+        passes.append(cmd)
+        # Pierwszy przebieg gubi jeden utwór na 403, drugi go dobiera.
+        got = 2 if len(passes) == 1 else 3
+        dest.mkdir(parents=True, exist_ok=True)
+        for i in range(1, got + 1):
+            (dest / f"{i:02d}_track.mp3").write_text("audio", encoding="utf-8")
+        return ""
+
+    monkeypatch.setattr(yt_batch_module, "run_command", fake_run_command)
+    downloaded = yt_batch_module.download_album_playlist(
+        "https://music.youtube.com/playlist?list=X", dest, sleep=lambda _s: None
+    )
+
+    assert downloaded == 3
+    assert len(passes) == 2
+    archive = str(dest / ".yt-dlp-archive.txt")
+    assert all(archive == cmd[cmd.index("--download-archive") + 1] for cmd in passes)
+
+
+def test_download_album_playlist_warns_about_tracks_it_never_got(
+    monkeypatch, yt_batch_module, tmp_path, capsys
+):
+    dest = tmp_path / "dl"
+    passes = []
+
+    def fake_run_command(cmd, verbose=False, check=True, env_overrides=None):
+        if "--flat-playlist" in cmd:
+            return json.dumps({"entries": [{"id": "a"}, {"id": "b"}]})
+        passes.append(cmd)
+        dest.mkdir(parents=True, exist_ok=True)
+        (dest / "01_track.mp3").write_text("audio", encoding="utf-8")
+        return ""
+
+    monkeypatch.setattr(yt_batch_module, "run_command", fake_run_command)
+    downloaded = yt_batch_module.download_album_playlist(
+        "https://music.youtube.com/playlist?list=X", dest, sleep=lambda _s: None
+    )
+
+    assert downloaded == 1
+    assert len(passes) == yt_batch_module.ALBUM_DOWNLOAD_PASSES
+    # Brak nie może przejść po cichu, ale nie sugerujemy, że na pewno da się go obejść.
+    out = capsys.readouterr().out
+    assert "Pobrano 1/2 utworów" in out
+    assert "trwale niedostępne" in out
+
+
+def test_download_album_playlist_stops_early_when_count_unknown(monkeypatch, yt_batch_module, tmp_path):
+    """Bez znanej liczby pozycji jedynym sygnałem stopu jest przebieg bez nowych plików."""
+    dest = tmp_path / "dl"
+    passes = []
+
+    def fake_run_command(cmd, verbose=False, check=True, env_overrides=None):
+        if "--flat-playlist" in cmd:
+            raise RuntimeError("spis niedostępny")
+        passes.append(cmd)
+        dest.mkdir(parents=True, exist_ok=True)
+        (dest / "01_track.mp3").write_text("audio", encoding="utf-8")
+        return ""
+
+    monkeypatch.setattr(yt_batch_module, "run_command", fake_run_command)
+    downloaded = yt_batch_module.download_album_playlist(
+        "https://music.youtube.com/playlist?list=X", dest, sleep=lambda _s: None
+    )
+
+    assert downloaded == 1
+    assert len(passes) == 2
+
+
+def test_download_album_playlist_retries_when_first_pass_gets_nothing(
+    monkeypatch, yt_batch_module, tmp_path
+):
+    """Pusty pierwszy przebieg to 'wszystko padło na 403', a nie 'nie ma czego pobierać'."""
+    dest = tmp_path / "dl"
+    passes = []
+
+    def fake_run_command(cmd, verbose=False, check=True, env_overrides=None):
+        if "--flat-playlist" in cmd:
+            return json.dumps({"entries": [{"id": "a"}, {"id": "b"}]})
+        passes.append(cmd)
+        dest.mkdir(parents=True, exist_ok=True)
+        if len(passes) == 3:  # dopiero trzeci przebieg się udaje
+            (dest / "01_track.mp3").write_text("audio", encoding="utf-8")
+            (dest / "02_track.mp3").write_text("audio", encoding="utf-8")
+        return ""
+
+    monkeypatch.setattr(yt_batch_module, "run_command", fake_run_command)
+    downloaded = yt_batch_module.download_album_playlist(
+        "https://music.youtube.com/playlist?list=X", dest, sleep=lambda _s: None
+    )
+
+    assert downloaded == 2
+    assert len(passes) == 3
+
+
+def test_process_album_playlist_keeps_sources_with_keep_original(
+    monkeypatch, yt_batch_module, tmp_path, args_factory
+):
+    """Z -k katalog źródeł albumu zostaje; plik archiwum nie może udawać utworu."""
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    seen_tracks = []
+
+    def fake_download(playlist_url, dest_dir, cookies_from_browser=None, **_kwargs):
+        dest = Path(dest_dir)
+        dest.mkdir(parents=True, exist_ok=True)
+        (dest / "01_a.mp3").write_text("audio", encoding="utf-8")
+        (dest / "02_b.mp3").write_text("audio", encoding="utf-8")
+        (dest / ".yt-dlp-archive.txt").write_text("youtube aaa\n", encoding="utf-8")
+        return 2
+
+    monkeypatch.setattr(yt_batch_module, "download_album_playlist", fake_download)
+    monkeypatch.setattr(
+        yt_batch_module,
+        "process_local_file",
+        lambda path, *_a, **_k: seen_tracks.append(Path(path).name),
+    )
+
+    yt_batch_module.process_album_playlist(
+        "https://music.youtube.com/playlist?list=X",
+        args_factory(keep_original=True),
+        out_dir,
+        1,
+        1,
+        "Artysta - Album",
+    )
+
+    # Archiwum nie trafia do separacji, a źródła zostają na dysku.
+    assert seen_tracks == ["01_a.mp3", "02_b.mp3"]
+    work_dirs = list((out_dir / ".yt-batch-album-tmp").iterdir())
+    assert len(work_dirs) == 1
+    assert (work_dirs[0] / "01_a.mp3").exists()
+
+
+def test_process_album_playlist_removes_sources_without_keep_original(
+    monkeypatch, yt_batch_module, tmp_path, args_factory
+):
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    def fake_download(playlist_url, dest_dir, cookies_from_browser=None, **_kwargs):
+        dest = Path(dest_dir)
+        dest.mkdir(parents=True, exist_ok=True)
+        (dest / "01_a.mp3").write_text("audio", encoding="utf-8")
+        return 1
+
+    monkeypatch.setattr(yt_batch_module, "download_album_playlist", fake_download)
+    monkeypatch.setattr(yt_batch_module, "process_local_file", lambda *_a, **_k: None)
+
+    yt_batch_module.process_album_playlist(
+        "https://music.youtube.com/playlist?list=X",
+        args_factory(keep_original=False),
+        out_dir,
+        1,
+        1,
+        "Album",
+    )
+
+    assert list((out_dir / ".yt-batch-album-tmp").iterdir()) == []
 
 
 def test_resolve_album_playlist_url_yt_inserts_cookies(monkeypatch, yt_batch_module):

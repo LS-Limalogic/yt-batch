@@ -8,6 +8,9 @@ import json
 import os
 import re
 import hashlib
+import tempfile
+import time
+from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -30,15 +33,107 @@ SOURCE_MAP = {
     "yt":  "ytsearch1",        # YouTube
 }
 
-# Wspólne flagi dla yt-dlp (DRY)
+# Wspólne flagi dla yt-dlp (DRY). Szablon -o jest osobno, bo zależy od katalogu docelowego.
 YT_COMMON_FLAGS = [
-    "-o", "%(title)s.%(ext)s",
     "--restrict-filenames",
     "--no-mtime"  # Ważne: nie zmieniaj czasu modyfikacji pliku na czas uploadu filmu
 ]
 
 # Pojedyncze pobranie całej playlisty (album): numeracja i osadzanie metadanych
 YT_ALBUM_PARSE_METADATA = "playlist_index:%(track_number)s"
+
+# Pobieranie z YouTube bywa niestabilne: jedyny klient działający bez tokenu PO
+# (android_vr) zwraca sporadycznie HTTP 403. Własne retry yt-dlp tu nie pomagają —
+# trzeba ponowić całe wywołanie, żeby wymusić świeżą ekstrakcję adresów strumienia.
+DOWNLOAD_RETRY_ATTEMPTS = 4
+DOWNLOAD_RETRY_BASE_DELAY = 3.0
+ALBUM_DOWNLOAD_PASSES = 3
+
+# Błędy, których ponawianie nie ma sensu — problem jest po stronie samego materiału.
+PERMANENT_ERROR_PATTERNS = (
+    "drm",
+    "private video",
+    "video unavailable",
+    "requested format is not available",
+    "sign in to confirm",
+    "members-only",
+    "removed by the uploader",
+    "no video formats found",
+    "is not a valid url",
+    "unsupported url",
+)
+
+RETRY_HINT = (
+    "jeśli 403 wraca uporczywie, spróbuj --cookies-from-browser chrome "
+    "albo zainstaluj provider tokenów PO (bgutil-ytdlp-pot-provider)."
+)
+
+
+def yt_output_args(output_dir):
+    """Szablon -o dla yt-dlp: plik źródłowy ląduje w katalogu wyjściowym, nie w cwd."""
+    return ["-o", str(Path(output_dir) / "%(title)s.%(ext)s")]
+
+
+def error_text(exc):
+    """
+    Pełny tekst błędu. CalledProcessError z trybu verbose trzyma wyjście yt-dlp
+    w .stderr, a jego str() zawiera tylko kod wyjścia — sama str(exc) nie wystarcza.
+    """
+    parts = []
+    stderr = getattr(exc, "stderr", None)
+    if stderr:
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode("utf-8", errors="replace")
+        parts.append(str(stderr))
+    parts.append(str(exc))
+    return "\n".join(parts)
+
+
+def is_retryable_error(exc):
+    """Ponawiamy wszystko poza błędami trwałymi (DRM, materiał niedostępny itp.)."""
+    text = error_text(exc).lower()
+    return not any(pattern in text for pattern in PERMANENT_ERROR_PATTERNS)
+
+
+def _first_error_line(exc):
+    """Skrót błędu do jednej linii — do komunikatu o ponowieniu."""
+    for line in error_text(exc).splitlines():
+        line = line.strip()
+        if line.upper().startswith("ERROR"):
+            return format_noisy_floats(line)
+    text = format_noisy_floats(error_text(exc).strip())
+    return text.splitlines()[0] if text else "nieznany błąd"
+
+
+def _sleep(seconds):
+    """Pauza między próbami — wydzielona, żeby testy mogły ją podmienić."""
+    time.sleep(seconds)
+
+
+def run_with_retries(
+    cmd,
+    label="Pobieranie",
+    attempts=DOWNLOAD_RETRY_ATTEMPTS,
+    base_delay=DOWNLOAD_RETRY_BASE_DELAY,
+    sleep=None,
+    **kwargs,
+):
+    """
+    run_command z ponawianiem całego procesu. Każda próba to nowe wywołanie yt-dlp,
+    więc adresy strumienia są pobierane od nowa — to jedyne co realnie leczy 403.
+    """
+    for attempt in range(1, attempts + 1):
+        try:
+            return run_command(cmd, **kwargs)
+        except Exception as e:
+            if attempt >= attempts or not is_retryable_error(e):
+                raise
+            delay = base_delay * (2 ** (attempt - 1))
+            print(
+                f"[RETRY] {label}: próba {attempt}/{attempts} nieudana "
+                f"({_first_error_line(e)}). Ponawiam za {delay:.0f}s..."
+            )
+            (sleep or _sleep)(delay)
 
 
 def yt_dlp_cookies_args(cookies_from_browser):
@@ -54,12 +149,32 @@ def yt_dlp_cookies_args(cookies_from_browser):
 # Ustawiane w main() przed pętlą przetwarzania — SIGINT usuwa też tymczasowe pobrania albumów.
 _cleanup_sigint_outdir = None
 
+# Aktywne katalogi robocze Demucsa — SIGINT musi je posprzątać, bo bez tego zostają na dysku.
+_active_demucs_dirs = set()
+
+
+@contextmanager
+def demucs_workdir():
+    """
+    Katalog roboczy Demucsa poza repozytorium (Demucs domyślnie pisze do ./separated
+    względem cwd). Usuwany zawsze — także gdy separacja rzuci wyjątkiem.
+    """
+    path = Path(tempfile.mkdtemp(prefix="yt-batch-demucs-"))
+    _active_demucs_dirs.add(path)
+    try:
+        yield path
+    finally:
+        _active_demucs_dirs.discard(path)
+        shutil.rmtree(path, ignore_errors=True)
+
 
 def cleanup_handler(signum, frame):
     """Obsługa przerwania Ctrl+C."""
     global _cleanup_sigint_outdir
     print("\n\n!!! Przerwano przez użytkownika (SIGINT). Sprzątam i zamykam...")
-    shutil.rmtree("separated", ignore_errors=True)
+    for path in list(_active_demucs_dirs):
+        shutil.rmtree(path, ignore_errors=True)
+    _active_demucs_dirs.clear()
     if _cleanup_sigint_outdir is not None:
         album_tmp = _cleanup_sigint_outdir / ".yt-batch-album-tmp"
         shutil.rmtree(album_tmp, ignore_errors=True)
@@ -453,7 +568,7 @@ def resolve_album_playlist_url(album_query, source, cookies_from_browser=None):
                 + yt_dlp_cookies_args(cookies_from_browser)
                 + ["-J", "--no-download", album_query]
             )
-            meta_json = run_command(meta_cmd)
+            meta_json = run_with_retries(meta_cmd, label="Metadane albumu")
             meta = json.loads(meta_json)
             raw_title = format_album_folder_name(meta) or meta.get("title") or ""
             subdir = safe_album_subdir_name(raw_title, fallback)
@@ -474,7 +589,7 @@ def resolve_album_playlist_url(album_query, source, cookies_from_browser=None):
             + yt_dlp_cookies_args(cookies_from_browser)
             + ["-j", "--no-download", search_term]
         )
-        meta_json = run_command(meta_cmd)
+        meta_json = run_with_retries(meta_cmd, label="Wyszukiwanie albumu")
         meta = json.loads(meta_json)
     except Exception as e:
         print(f"[ERROR] Nie udało się znaleźć albumu: {format_noisy_floats(str(e))}")
@@ -504,11 +619,38 @@ def resolve_album_playlist_url(album_query, source, cookies_from_browser=None):
     return (playlist_url, subdir)
 
 
-def download_album_playlist(playlist_url, dest_dir, cookies_from_browser=None):
-    """Jedno wywołanie yt-dlp: cała playlista do katalogu dest_dir."""
+def count_playlist_entries(playlist_url, cookies_from_browser=None):
+    """Liczba pozycji na playliście (szybki --flat-playlist) albo None, gdy nie da się ustalić."""
+    try:
+        meta_cmd = (
+            ["yt-dlp"]
+            + yt_dlp_cookies_args(cookies_from_browser)
+            + ["-J", "--flat-playlist", "--no-download", playlist_url]
+        )
+        meta = json.loads(run_with_retries(meta_cmd, label="Spis playlisty", attempts=2))
+        entries = meta.get("entries") or []
+        return len(entries) or None
+    except Exception:
+        return None
+
+
+def download_album_playlist(
+    playlist_url,
+    dest_dir,
+    cookies_from_browser=None,
+    passes=ALBUM_DOWNLOAD_PASSES,
+    sleep=None,
+):
+    """
+    Pobiera całą playlistę do dest_dir. Pojedyncze utwory potrafią paść na 403, a
+    --ignore-errors sprawia, że yt-dlp po prostu je pomija. Dlatego robimy kilka
+    przebiegów: --download-archive pomija to, co już się udało, więc kolejny przebieg
+    dobiera wyłącznie braki.
+    """
     dest_dir = Path(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
     output_pattern = str(dest_dir / "%(playlist_index)02d_%(title)s.%(ext)s")
+    archive_path = dest_dir / ".yt-dlp-archive.txt"
     dl_cmd = [
         "yt-dlp",
     ] + yt_dlp_cookies_args(cookies_from_browser) + [
@@ -517,6 +659,7 @@ def download_album_playlist(playlist_url, dest_dir, cookies_from_browser=None):
         "-f", "bestaudio",
         "--audio-quality", "0",
         "-o", output_pattern,
+        "--download-archive", str(archive_path),
         "--embed-thumbnail",
         "--embed-metadata",
         "--parse-metadata", YT_ALBUM_PARSE_METADATA,
@@ -524,8 +667,41 @@ def download_album_playlist(playlist_url, dest_dir, cookies_from_browser=None):
         "--no-mtime",
         playlist_url,
     ]
-    # Playlisty często zawierają pozycje niedostępne (wiek, region) — yt-dlp i tak zwraca kod != 0.
-    run_command(dl_cmd, verbose=True, check=False)
+
+    expected = count_playlist_entries(playlist_url, cookies_from_browser)
+    if expected:
+        print(f"   >>> Playlista: {expected} pozycji")
+
+    downloaded = 0
+    attempt = 0
+    while attempt < passes:
+        attempt += 1
+        if attempt > 1:
+            missing = f"{expected - downloaded} brakujących" if expected else "braki"
+            print(f"\n   >>> Przebieg {attempt}/{passes} — dobieram {missing}...")
+            (sleep or _sleep)(DOWNLOAD_RETRY_BASE_DELAY)
+        # Playlisty często zawierają pozycje niedostępne (wiek, region) — yt-dlp i tak zwraca kod != 0.
+        run_command(dl_cmd, verbose=True, check=False)
+
+        previous, downloaded = downloaded, len(list_album_mp3_files(dest_dir))
+        if expected and downloaded >= expected:
+            break
+        if not expected and attempt > 1 and downloaded == previous:
+            # Bez znanej liczby pozycji jedyny sygnał to brak nowych plików w kolejnym
+            # przebiegu. Gdy liczbę znamy, dociągamy do skutku — "0 nowych" oznacza
+            # wtedy serię 403, czyli dokładnie przypadek, dla którego są przebiegi.
+            break
+
+    if expected and downloaded < expected:
+        # Liczba pozycji playlisty obejmuje też te trwale niedostępne, więc brak
+        # nie musi oznaczać 403 — nie sugerujemy, że da się go obejść.
+        print(
+            f"[WARN] Pobrano {downloaded}/{expected} utworów. Brakujące {expected - downloaded} "
+            f"są albo trwale niedostępne (wiek/region/usunięte), albo padły na błąd sieci "
+            f"mimo {attempt} przebiegów."
+        )
+        print(f"       Jeśli to drugie: {RETRY_HINT}")
+    return downloaded
 
 
 def list_album_mp3_files(dest_dir):
@@ -589,33 +765,34 @@ def process_local_file(input_path, index, total, args, output_dir):
     # Separacja (Demucs)
     device = get_demucs_device()
     print(f"   >>> Separacja (Model: {selected_model}, Shifts: {args.shifts})...")
-    try:
-        demucs_cmd = [
-            "demucs",
-            "-n", selected_model,
-            "--shifts", str(args.shifts),
-            "--two-stems=vocals",
-            "--mp3",
-            "--mp3-bitrate", str(args.quality),
-            str(input_path.absolute())
-        ]
-        if device:
-            demucs_cmd = ["demucs", "-d", device] + demucs_cmd[1:]
-        run_command(demucs_cmd, verbose=True)
-    except Exception as e:
-        print(f"[FAIL] Demucs crashed: {format_noisy_floats(str(e))}")
-        return
+    with demucs_workdir() as work_dir:
+        try:
+            demucs_cmd = [
+                "demucs",
+                "-o", str(work_dir),
+                "-n", selected_model,
+                "--shifts", str(args.shifts),
+                "--two-stems=vocals",
+                "--mp3",
+                "--mp3-bitrate", str(args.quality),
+                str(input_path.absolute())
+            ]
+            if device:
+                demucs_cmd = ["demucs", "-d", device] + demucs_cmd[1:]
+            run_command(demucs_cmd, verbose=True)
+        except Exception as e:
+            print(f"[FAIL] Demucs crashed: {format_noisy_floats(str(e))}")
+            return
 
-    # Przenoszenie i sprzątanie
-    source_stem = Path("separated") / selected_model / base_name / "no_vocals.mp3"
-    if source_stem.exists():
-        shutil.move(str(source_stem), str(final_dest))
-        copy_audio_metadata(input_path, final_dest)
-        print(f">>> SUKCES: {final_dest}")
-        shutil.rmtree("separated", ignore_errors=True)
-        # Nie usuwamy oryginału — to plik użytkownika
-    else:
-        print(f"[WTF] Demucs zakończył pracę, ale nie widzę pliku: {source_stem}")
+        # Przenoszenie (katalog roboczy sprząta context manager)
+        source_stem = work_dir / selected_model / base_name / "no_vocals.mp3"
+        if source_stem.exists():
+            shutil.move(str(source_stem), str(final_dest))
+            copy_audio_metadata(input_path, final_dest)
+            print(f">>> SUKCES: {final_dest}")
+            # Nie usuwamy oryginału — to plik użytkownika
+        else:
+            print(f"[WTF] Demucs zakończył pracę, ale nie widzę pliku: {source_stem}")
 
 
 def process_item(query, index, total, args, output_dir):
@@ -647,13 +824,15 @@ def process_item(query, index, total, args, output_dir):
             ["yt-dlp"]
             + yt_dlp_cookies_args(cookie_spec)
             + ["--get-filename"]
+            + yt_output_args(output_dir)
             + YT_COMMON_FLAGS
             + ["-x", "--audio-format", "mp3", dl_source]
         )
-        filename = run_command(name_cmd)
+        filename = run_with_retries(name_cmd, label="Metadane")
         base_name = Path(filename).stem
-        input_mp3 = Path(f"{base_name}.mp3")
-        
+        # Plik źródłowy trzymamy w katalogu wyjściowym, nie w cwd — z -k zostaje przy wyniku.
+        input_mp3 = Path(output_dir) / f"{base_name}.mp3"
+
         # Sprawdzenie czy wynik już istnieje w output
         final_dest = output_dir / f"{base_name}-no-vocals.mp3"
         if final_dest.exists():
@@ -677,18 +856,20 @@ def process_item(query, index, total, args, output_dir):
                     "-f", "bestaudio",
                     "--audio-quality", "0",
                 ]
+                + yt_output_args(output_dir)
                 + YT_COMMON_FLAGS
                 + [dl_source]
             )
-            
-            run_command(dl_cmd, verbose=True)
-            
+
+            run_with_retries(dl_cmd, label="Pobieranie", verbose=True)
+
             # KRYTYCZNA WALIDACJA
             if not input_mp3.exists():
                 raise FileNotFoundError(f"yt-dlp zgłosił sukces, ale plik {input_mp3} nie istnieje.")
-                
+
         except Exception as e:
-            print(f"[FAIL] Błąd pobierania: {format_noisy_floats(str(e))}")
+            print(f"[FAIL] Błąd pobierania: {_first_error_line(e)}")
+            print(f"       Wskazówka: {RETRY_HINT}")
             return
     else:
         print("   >>> Używam lokalnego pliku źródłowego (cache).")
@@ -696,41 +877,41 @@ def process_item(query, index, total, args, output_dir):
     # 3. Separacja (Demucs)
     device = get_demucs_device()
     print(f"   >>> Separacja (Model: {selected_model}, Shifts: {args.shifts})...")
-    try:
-        demucs_cmd = [
-            "demucs",
-            "-n", selected_model,
-            "--shifts", str(args.shifts),
-            "--two-stems=vocals",
-            "--mp3",
-            "--mp3-bitrate", str(args.quality),
-            str(input_mp3)
-        ]
-        if device:
-            demucs_cmd = ["demucs", "-d", device] + demucs_cmd[1:]
-        run_command(demucs_cmd, verbose=True)
-    except Exception as e:
-        print(f"[FAIL] Demucs crashed: {format_noisy_floats(str(e))}")
-        # Sprzątamy wadliwy plik wejściowy, żeby nie blokował kolejnych prób
-        if input_mp3.exists() and not args.keep_original:
-            input_mp3.unlink()
-        return
+    with demucs_workdir() as work_dir:
+        try:
+            demucs_cmd = [
+                "demucs",
+                "-o", str(work_dir),
+                "-n", selected_model,
+                "--shifts", str(args.shifts),
+                "--two-stems=vocals",
+                "--mp3",
+                "--mp3-bitrate", str(args.quality),
+                str(input_mp3)
+            ]
+            if device:
+                demucs_cmd = ["demucs", "-d", device] + demucs_cmd[1:]
+            run_command(demucs_cmd, verbose=True)
+        except Exception as e:
+            print(f"[FAIL] Demucs crashed: {format_noisy_floats(str(e))}")
+            # Sprzątamy wadliwy plik wejściowy, żeby nie blokował kolejnych prób
+            if input_mp3.exists() and not args.keep_original:
+                input_mp3.unlink()
+            return
 
-    # 4. Przenoszenie i Sprzątanie
-    # Ścieżka generowana przez demucs: separated/<model>/<track>/no_vocals.mp3
-    source_stem = Path("separated") / selected_model / base_name / "no_vocals.mp3"
-    
-    if source_stem.exists():
-        shutil.move(str(source_stem), str(final_dest))
-        copy_audio_metadata(input_mp3, final_dest)
-        print(f">>> SUKCES: {final_dest}")
-        
-        # Sprzątanie tymczasowe
-        shutil.rmtree("separated", ignore_errors=True)
-        if not args.keep_original and input_mp3.exists():
-            input_mp3.unlink()
-    else:
-        print(f"[WTF] Demucs zakończył pracę, ale nie widzę pliku: {source_stem}")
+        # 4. Przenoszenie i Sprzątanie
+        # Ścieżka generowana przez demucs: <work_dir>/<model>/<track>/no_vocals.mp3
+        source_stem = work_dir / selected_model / base_name / "no_vocals.mp3"
+
+        if source_stem.exists():
+            shutil.move(str(source_stem), str(final_dest))
+            copy_audio_metadata(input_mp3, final_dest)
+            print(f">>> SUKCES: {final_dest}")
+
+            if not args.keep_original and input_mp3.exists():
+                input_mp3.unlink()
+        else:
+            print(f"[WTF] Demucs zakończył pracę, ale nie widzę pliku: {source_stem}")
 
 def main():
     global _cleanup_sigint_outdir

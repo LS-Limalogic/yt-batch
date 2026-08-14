@@ -23,8 +23,9 @@ def test_process_item_download_then_success_move(tmp_path, args_factory, yt_batc
     args = args_factory(model="1", keep_original=False, source="yt")
 
     base_name = "song"
-    input_mp3 = tmp_path / f"{base_name}.mp3"
-    source_stem = tmp_path / "separated" / yt_batch_module.resolve_model("1") / base_name / "no_vocals.mp3"
+    # Plik źródłowy trafia do katalogu wyjściowego, nie do cwd.
+    input_mp3 = output_dir / f"{base_name}.mp3"
+    model = yt_batch_module.resolve_model("1")
 
     state = {"downloaded": False}
 
@@ -36,19 +37,58 @@ def test_process_item_download_then_success_move(tmp_path, args_factory, yt_batc
             state["downloaded"] = True
             return ""
         if cmd[0] == "demucs":
-            source_stem.parent.mkdir(parents=True, exist_ok=True)
-            source_stem.write_text("stem", encoding="utf-8")
+            work_dir = Path(cmd[cmd.index("-o") + 1])
+            stem = work_dir / model / base_name / "no_vocals.mp3"
+            stem.parent.mkdir(parents=True, exist_ok=True)
+            stem.write_text("stem", encoding="utf-8")
             return ""
         raise AssertionError(f"Unexpected command: {cmd}")
 
     monkeypatch.setattr(yt_batch_module, "run_command", fake_run_command)
     monkeypatch.setattr(yt_batch_module, "get_demucs_device", lambda: None)
-    monkeypatch.setattr(yt_batch_module.shutil, "rmtree", lambda *_args, **_kwargs: None)
 
     yt_batch_module.process_item("my song", 1, 1, args, output_dir)
     assert state["downloaded"] is True
     assert (output_dir / f"{base_name}-no-vocals.mp3").exists()
     assert not input_mp3.exists()
+    assert not (tmp_path / "separated").exists()
+
+
+def test_process_item_downloads_into_output_dir(tmp_path, args_factory, yt_batch_module, monkeypatch):
+    """Szablon -o yt-dlp celuje w --outdir, więc z -k źródło zostaje przy wyniku."""
+    monkeypatch.chdir(tmp_path)
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    args = args_factory(keep_original=True, source="yt")
+
+    input_mp3 = output_dir / "song.mp3"
+    model = yt_batch_module.resolve_model("1")
+    templates = []
+
+    def fake_run_command(cmd, verbose=False, env_overrides=None):
+        if cmd[0] == "yt-dlp":
+            templates.append(cmd[cmd.index("-o") + 1])
+        if "--get-filename" in cmd:
+            return "song.mp3"
+        if cmd[0] == "yt-dlp":
+            input_mp3.write_text("audio", encoding="utf-8")
+            return ""
+        if cmd[0] == "demucs":
+            work_dir = Path(cmd[cmd.index("-o") + 1])
+            stem = work_dir / model / "song" / "no_vocals.mp3"
+            stem.parent.mkdir(parents=True, exist_ok=True)
+            stem.write_text("stem", encoding="utf-8")
+            return ""
+        raise AssertionError(f"Unexpected command: {cmd}")
+
+    monkeypatch.setattr(yt_batch_module, "run_command", fake_run_command)
+    monkeypatch.setattr(yt_batch_module, "get_demucs_device", lambda: None)
+
+    yt_batch_module.process_item("my song", 1, 1, args, output_dir)
+
+    assert templates and all(t == str(output_dir / "%(title)s.%(ext)s") for t in templates)
+    assert input_mp3.exists()  # -k zachowuje źródło...
+    assert not (tmp_path / "song.mp3").exists()  # ...ale nie w katalogu roboczym
 
 
 def test_process_item_ytm_uses_resolved_music_url(tmp_path, args_factory, yt_batch_module, monkeypatch):
@@ -67,7 +107,9 @@ def test_process_item_ytm_uses_resolved_music_url(tmp_path, args_factory, yt_bat
     monkeypatch.setattr(yt_batch_module, "run_command", fake_run_command)
     monkeypatch.setattr(yt_batch_module, "resolve_ytmusic_url", lambda _q: "https://music.youtube.com/watch?v=abc")
     yt_batch_module.process_item("some track", 1, 1, args, output_dir)
-    assert seen_sources == ["https://music.youtube.com/watch?v=abc"]
+    # Błąd przejściowy jest ponawiany, więc źródło pojawia się raz na próbę.
+    assert set(seen_sources) == {"https://music.youtube.com/watch?v=abc"}
+    assert len(seen_sources) == yt_batch_module.DOWNLOAD_RETRY_ATTEMPTS
 
 
 def test_process_item_ytm_rejects_non_music_url(tmp_path, args_factory, yt_batch_module, monkeypatch, capsys):
@@ -91,8 +133,8 @@ def test_process_item_ytm_accepts_music_url(tmp_path, args_factory, yt_batch_mod
     output_dir = tmp_path / "output"
     output_dir.mkdir()
     args = args_factory(source="ytm", keep_original=False)
-    input_mp3 = tmp_path / "song.mp3"
-    source_stem = tmp_path / "separated" / yt_batch_module.resolve_model("1") / "song" / "no_vocals.mp3"
+    input_mp3 = output_dir / "song.mp3"
+    model = yt_batch_module.resolve_model("1")
 
     def fake_run_command(cmd, verbose=False, env_overrides=None):
         if "--get-filename" in cmd:
@@ -101,14 +143,15 @@ def test_process_item_ytm_accepts_music_url(tmp_path, args_factory, yt_batch_mod
             input_mp3.write_text("audio", encoding="utf-8")
             return ""
         if cmd[0] == "demucs":
-            source_stem.parent.mkdir(parents=True, exist_ok=True)
-            source_stem.write_text("stem", encoding="utf-8")
+            work_dir = Path(cmd[cmd.index("-o") + 1])
+            stem = work_dir / model / "song" / "no_vocals.mp3"
+            stem.parent.mkdir(parents=True, exist_ok=True)
+            stem.write_text("stem", encoding="utf-8")
             return ""
         raise AssertionError(f"Unexpected command: {cmd}")
 
     monkeypatch.setattr(yt_batch_module, "run_command", fake_run_command)
     monkeypatch.setattr(yt_batch_module, "get_demucs_device", lambda: None)
-    monkeypatch.setattr(yt_batch_module.shutil, "rmtree", lambda *_args, **_kwargs: None)
 
     yt_batch_module.process_item("https://music.youtube.com/watch?v=abc", 1, 1, args, output_dir)
     assert (output_dir / "song-no-vocals.mp3").exists()
@@ -121,7 +164,7 @@ def test_process_item_demucs_error_deletes_input_when_not_keep(
     output_dir = tmp_path / "output"
     output_dir.mkdir()
     args = args_factory(keep_original=False, source="yt")
-    input_mp3 = tmp_path / "song.mp3"
+    input_mp3 = output_dir / "song.mp3"
     input_mp3.write_text("audio", encoding="utf-8")
 
     def fake_run_command(cmd, verbose=False, env_overrides=None):
