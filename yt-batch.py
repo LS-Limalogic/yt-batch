@@ -921,8 +921,8 @@ def main():
     
     parser = argparse.ArgumentParser(description="Linus Audio Extractor v4.0 (Stable)")
     
-    parser.add_argument("-i", "--input", help="Plik tekstowy z listą utworów")
-    parser.add_argument("-f", "--folder", help="Folder z plikami audio do separacji (mp3, opus, m4a, wav, flac itd.)")
+    parser.add_argument("-f", "--file", help="Plik tekstowy z listą utworów")
+    parser.add_argument("-i", "--folder", help="Folder z plikami audio do separacji (mp3, opus, m4a, wav, flac itd.)")
     parser.add_argument("query", nargs="*", help="Frazy, linki lub ścieżki do plików")
     
     # Parametry
@@ -953,16 +953,18 @@ def main():
 
     args = parser.parse_args()
 
-    # Przygotowanie outputu
     out_path = Path(args.outdir)
-    out_path.mkdir(parents=True, exist_ok=True)
 
     queue = []
-    
+
     # Bezpieczne czytanie pliku (utf-8)
-    if args.input:
-        in_path = Path(args.input)
-        if in_path.exists():
+    if args.file:
+        in_path = Path(args.file)
+        if in_path.is_dir():
+            print(f"Błąd: '{args.file}' to katalog, a -f oczekuje pliku tekstowego z listą utworów.")
+            print("Dla katalogu z plikami audio użyj -i/--folder.")
+            sys.exit(1)
+        elif in_path.exists():
             try:
                 with open(in_path, 'r', encoding='utf-8') as f:
                     queue.extend([l.strip() for l in f if l.strip()])
@@ -970,7 +972,7 @@ def main():
                 print("Błąd: Plik wejściowy musi być zakodowany w UTF-8.")
                 sys.exit(1)
         else:
-            print(f"Błąd: Plik {args.input} nie istnieje.")
+            print(f"Błąd: Plik {args.file} nie istnieje.")
             sys.exit(1)
 
     if args.query:
@@ -998,6 +1000,10 @@ def main():
     if not queue and not album_jobs:
         parser.print_help()
         sys.exit(1)
+
+    # Katalog wyjściowy tworzymy dopiero po walidacji — błędne wywołanie nie może
+    # zostawić pustego ./output w katalogu roboczym.
+    out_path.mkdir(parents=True, exist_ok=True)
 
     _cleanup_sigint_outdir = out_path.resolve()
 

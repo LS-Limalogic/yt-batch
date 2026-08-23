@@ -16,7 +16,7 @@ python3 -m pytest -q
 
 ## Essentials
 - Main script: `yt-batch.py`
-- Typical flags: `-i` (input file), `-f` (folder), `-o` (output), `-m` (model), `-q` (quality)
+- Typical flags: `-f` (text file with a track list), `-i` (input folder), `-o` (output), `-m` (model), `-q` (quality)
 - Requirements: Python 3.9+, `ffmpeg`, `yt-dlp`, `demucs` in `PATH`
 
 ## Gotchas

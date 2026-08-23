@@ -97,7 +97,7 @@ python3 yt-batch.py "Nazwa Utworu"
 Separacja lokalnego folderu (mp3, opus, m4a, wav, flac — Demucs obsługuje formaty wspierane przez ffmpeg):
 
 ```bash
-python3 yt-batch.py -f ./moje-pliki-audio
+python3 yt-batch.py -i ./moje-pliki-audio
 ```
 
 ## Flagi i Parametry
@@ -109,8 +109,8 @@ python3 yt-batch.py -f ./moje-pliki-audio
 | `--outdir`        | `-o`  | Katalog docelowy                                                   | ./output  |
 | `--shifts`        | `-s`  | Liczba przesunięć (1=szybko, 2+=jakość)                            | 1         |
 | `--keep-original` | `-k`  | Zachowaj oryginalny plik z wokalem                                 | False     |
-| `--input`         | `-i`  | Plik .txt z listą linków/fraz                                      | -         |
-| `--folder`        | `-f`  | Folder z plikami audio (mp3, opus, m4a, wav, flac itd.)            | -         |
+| `--file`          | `-f`  | Plik .txt z listą linków/fraz                                      | -         |
+| `--folder`        | `-i`  | Folder z plikami audio (mp3, opus, m4a, wav, flac itd.)            | -         |
 | `--album`         | `-a`  | Album/playlista (patrz [Tryb albumu](#tryb-albumu)). Można podać wielokrotnie. | -         |
 | `--source`        |       | Źródło: `ytm`=YouTube Music search, `yt`=YouTube search            | ytm       |
 

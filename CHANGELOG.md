@@ -12,12 +12,15 @@ Format wg [Keep a Changelog](https://keepachangelog.com/pl/1.0.0/). Projekt nie 
 
 ### Fixed
 
+- Flaga pliku z listą utworów wskazująca na katalog kończy się czytelnym błędem z podpowiedzią, żeby użyć flagi folderu, zamiast wysypywać się na `IsADirectoryError` (walidacja sprawdzała tylko `exists()`, nie odróżniając pliku od katalogu).
+- Katalog wyjściowy powstaje dopiero po walidacji argumentów — błędne wywołanie nie zostawia już pustego `./output` w katalogu roboczym.
 - Tryb `--album`: playlisty z pozycjami, których `yt-dlp` nie może pobrać (np. wiek bez logowania, usunięty film), nie kończą całego zadania błędem po częściowym pobraniu — używane jest `--ignore-errors`, a niezerowy kod wyjścia `yt-dlp` po pobraniu nie blokuje Demuksa, o ile w katalogu tymczasowym są pliki `.mp3`.
 - Demucs pisze do katalogu tymczasowego systemu zamiast do `./separated` względem katalogu roboczego. Katalog jest usuwany także wtedy, gdy separacja padnie lub proces zostanie przerwany — wcześniej po błędzie zostawał w repozytorium.
 - Plik źródłowy pobierany jest do `--outdir`, a nie do katalogu roboczego. Z `-k` zostaje więc obok wyniku, zamiast zaśmiecać katalog, z którego uruchomiono skrypt.
 
 ### Changed
 
+- **Breaking:** zamiana skrótów flag wejściowych — `-f/--file` to plik tekstowy z listą utworów (dawniej `-i/--input`), a `-i/--folder` to folder z plikami audio (dawniej `-f/--folder`). Długa nazwa `--input` została wycofana, więc stare wywołanie kończy się błędem argparse zamiast po cichu zrobić coś innego.
 - `run_command(..., check=True)` — opcjonalny `check=False` (ostrzeżenie zamiast wyjątku przy niezerowym kodzie w trybie verbose).
 
 ---
