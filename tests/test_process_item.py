@@ -112,20 +112,41 @@ def test_process_item_ytm_uses_resolved_music_url(tmp_path, args_factory, yt_bat
     assert len(seen_sources) == yt_batch_module.DOWNLOAD_RETRY_ATTEMPTS
 
 
-def test_process_item_ytm_rejects_non_music_url(tmp_path, args_factory, yt_batch_module, monkeypatch, capsys):
+def test_process_item_passes_any_url_through_regardless_of_source(
+    tmp_path, args_factory, yt_batch_module, monkeypatch
+):
+    """URL nie potrzebuje --source yt — --source rządzi tylko zapytaniami tekstowymi."""
     monkeypatch.chdir(tmp_path)
     output_dir = tmp_path / "output"
     output_dir.mkdir()
-    args = args_factory(source="ytm")
+    args = args_factory(source="ytm", keep_original=False)
+    url = "https://www.youtube.com/watch?v=abc"
+    input_mp3 = output_dir / "song.mp3"
+    model = yt_batch_module.resolve_model("1")
+    seen_sources = []
 
-    def fake_run_command(cmd, verbose=False):
+    def fake_run_command(cmd, verbose=False, env_overrides=None):
+        if "--get-filename" in cmd:
+            seen_sources.append(cmd[-1])
+            return "song.mp3"
+        if cmd[0] == "yt-dlp" and "-x" in cmd:
+            seen_sources.append(cmd[-1])
+            input_mp3.write_text("audio", encoding="utf-8")
+            return ""
+        if cmd[0] == "demucs":
+            work_dir = Path(cmd[cmd.index("-o") + 1])
+            stem = work_dir / model / "song" / "no_vocals.mp3"
+            stem.parent.mkdir(parents=True, exist_ok=True)
+            stem.write_text("stem", encoding="utf-8")
+            return ""
         raise AssertionError(f"Unexpected command: {cmd}")
 
     monkeypatch.setattr(yt_batch_module, "run_command", fake_run_command)
-    yt_batch_module.process_item("https://www.youtube.com/watch?v=abc", 1, 1, args, output_dir)
-    out = capsys.readouterr().out
-    assert "URL: https://www.youtube.com/watch?v=abc" in out
-    assert "akceptuje tylko URL-e z music.youtube.com" in out
+    monkeypatch.setattr(yt_batch_module, "get_demucs_device", lambda: None)
+
+    yt_batch_module.process_item(url, 1, 1, args, output_dir)
+    assert set(seen_sources) == {url}
+    assert (output_dir / "song-no-vocals.mp3").exists()
 
 
 def test_process_item_ytm_accepts_music_url(tmp_path, args_factory, yt_batch_module, monkeypatch):

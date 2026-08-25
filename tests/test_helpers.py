@@ -317,6 +317,27 @@ def test_resolve_album_playlist_url_ytm_requires_music_url(monkeypatch, yt_batch
     assert "ytm nie obsługuje wyszukiwania tekstowego albumu" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("source", ["ytm", "yt"])
+def test_resolve_album_playlist_url_takes_url_regardless_of_source(
+    source, monkeypatch, yt_batch_module
+):
+    """URL playlisty idzie wprost do -J — bez wyszukiwania i bez oglądania na --source."""
+    seen = {}
+
+    def fake_run_command(cmd, **_kwargs):
+        seen["cmd"] = cmd
+        return json.dumps({"title": "Plain YT Album"})
+
+    monkeypatch.setattr(yt_batch_module, "run_command", fake_run_command)
+    url = "https://www.youtube.com/playlist?list=PL_abc"
+    out_url, subdir = yt_batch_module.resolve_album_playlist_url(url, source)
+    assert out_url == url
+    assert subdir == "Plain YT Album"
+    assert seen["cmd"][-1] == url
+    assert "-J" in seen["cmd"]
+    assert not any(str(arg).startswith("ytsearch") for arg in seen["cmd"])
+
+
 def test_resolve_album_playlist_url_ytm_returns_url_and_subdir(monkeypatch, yt_batch_module):
     monkeypatch.setattr(
         yt_batch_module,
@@ -380,6 +401,40 @@ def test_yt_dlp_cookies_args_empty_when_unset(yt_batch_module):
     assert yt_batch_module.yt_dlp_cookies_args("   ") == []
 
 
+def test_normalize_cookie_option_reclaims_non_browser_value(yt_batch_module):
+    url = "https://music.youtube.com/watch?v=Udfa-bZXQ5s"
+    assert yt_batch_module.normalize_cookie_option(url) == (None, url)
+    assert yt_batch_module.normalize_cookie_option("bogus") == (None, "bogus")
+    assert yt_batch_module.normalize_cookie_option(None) == (None, None)
+    assert yt_batch_module.normalize_cookie_option("   ") == (None, None)
+
+
+def test_normalize_cookie_option_accepts_browser_specs(yt_batch_module):
+    assert yt_batch_module.normalize_cookie_option("chrome") == ("chrome", None)
+    assert yt_batch_module.normalize_cookie_option(" Safari ") == ("Safari", None)
+    assert yt_batch_module.normalize_cookie_option("firefox:Profil") == (
+        "firefox:Profil",
+        None,
+    )
+    assert yt_batch_module.normalize_cookie_option("chrome+gnomekeyring") == (
+        "chrome+gnomekeyring",
+        None,
+    )
+
+
+def test_yt_dlp_base_cmd_always_carries_common_flags(yt_batch_module):
+    """Każde wywołanie zbudowane tym helperem ma EJS — bez niego YouTube oddaje obrazki/403."""
+    cmd = yt_batch_module.yt_dlp_base_cmd()
+    assert cmd[0] == "yt-dlp"
+    assert cmd[cmd.index("--remote-components") + 1] == "ejs:github"
+    for flag in yt_batch_module.YT_COMMON_FLAGS:
+        assert flag in cmd
+
+    with_cookies = yt_batch_module.yt_dlp_base_cmd("chrome")
+    assert with_cookies[with_cookies.index("--cookies-from-browser") + 1] == "chrome"
+    assert "--remote-components" in with_cookies
+
+
 def test_yt_dlp_cookies_args_when_set(yt_batch_module):
     assert yt_batch_module.yt_dlp_cookies_args("chrome") == [
         "--cookies-from-browser",
@@ -413,6 +468,8 @@ def test_is_retryable_error_false_for_permanent_failures(yt_batch_module):
         "WARNING: This video is drm protected",
         "ERROR: [youtube] x: Private video. Sign in if you've been granted access",
         "ERROR: [youtube] x: Video unavailable",
+        # yt-dlp bez --remote-components: optparse, nie argparse.
+        "Usage: yt-dlp [OPTIONS] URL...\n\nyt-dlp: error: no such option: --remote-components",
     ]
     for output in permanent:
         assert yt_batch_module.is_retryable_error(_called_process_error(output)) is False
@@ -500,6 +557,24 @@ def test_download_album_playlist_builds_expected_cmd(monkeypatch, yt_batch_modul
     assert yt_batch_module.YT_ALBUM_PARSE_METADATA in cmd
     assert str(dest / "%(playlist_index)02d_%(title)s.%(ext)s") in cmd
     assert cmd[-1] == "https://music.youtube.com/playlist?list=X"
+
+
+def test_download_album_playlist_carries_common_flags(monkeypatch, yt_batch_module, tmp_path):
+    """Album szedł kiedyś własną wklejką flag i przez to bez EJS — cała playlista padała."""
+    captured = {}
+
+    def fake_run_command(cmd, verbose=False, check=True, env_overrides=None):
+        captured["cmd"] = cmd
+        return ""
+
+    monkeypatch.setattr(yt_batch_module, "run_command", fake_run_command)
+    yt_batch_module.download_album_playlist(
+        "https://music.youtube.com/playlist?list=X", tmp_path / "dl"
+    )
+    cmd = captured["cmd"]
+    for flag in yt_batch_module.YT_COMMON_FLAGS:
+        assert flag in cmd
+    assert cmd[cmd.index("--remote-components") + 1] == "ejs:github"
 
 
 def test_download_album_playlist_passes_cookies_to_yt_dlp(monkeypatch, yt_batch_module, tmp_path):

@@ -146,7 +146,87 @@ def test_main_exits_when_python_runtime_invalid(monkeypatch, yt_batch_module):
     assert exc.value.code == 1
 
 
-def test_main_default_source_is_ytm(monkeypatch, yt_batch_module):
+def test_main_stray_cookie_value_becomes_query(tmp_path, monkeypatch, capsys, yt_batch_module):
+    """`--cookies-from-browser URL` połykał URL i program kończył bez roboty."""
+    monkeypatch.chdir(tmp_path)
+    url = "https://music.youtube.com/watch?v=Udfa-bZXQ5s"
+    seen = []
+
+    monkeypatch.setattr(yt_batch_module, "check_dependencies", lambda: None)
+    monkeypatch.setattr(yt_batch_module, "check_python_runtime", lambda: None)
+    monkeypatch.setattr(yt_batch_module, "get_demucs_device", lambda: None)
+    monkeypatch.setattr(yt_batch_module, "process_local_file", lambda *a, **k: None)
+    monkeypatch.setattr(
+        yt_batch_module,
+        "process_item",
+        lambda item, _idx, _total, args, _out: seen.append(
+            (item, args.cookies_from_browser)
+        ),
+    )
+    monkeypatch.setattr(
+        yt_batch_module.sys,
+        "argv",
+        ["yt-batch.py", "--cookies-from-browser", url],
+    )
+
+    yt_batch_module.main()
+    assert seen == [(url, None)]
+    assert "--cookies-from-browser" in capsys.readouterr().out
+
+
+def test_main_keeps_valid_cookie_browser(tmp_path, monkeypatch, yt_batch_module):
+    monkeypatch.chdir(tmp_path)
+    seen = []
+    monkeypatch.setattr(yt_batch_module, "check_dependencies", lambda: None)
+    monkeypatch.setattr(yt_batch_module, "check_python_runtime", lambda: None)
+    monkeypatch.setattr(yt_batch_module, "get_demucs_device", lambda: None)
+    monkeypatch.setattr(yt_batch_module, "process_local_file", lambda *a, **k: None)
+    monkeypatch.setattr(
+        yt_batch_module,
+        "process_item",
+        lambda _item, _idx, _total, args, _out: seen.append(args.cookies_from_browser),
+    )
+    monkeypatch.setattr(
+        yt_batch_module.sys,
+        "argv",
+        ["yt-batch.py", "--cookies-from-browser", "safari:Default", "some query"],
+    )
+
+    yt_batch_module.main()
+    assert seen == ["safari:Default"]
+
+
+def test_main_empty_queue_with_args_prints_hint_not_help(tmp_path, monkeypatch, capsys, yt_batch_module):
+    monkeypatch.chdir(tmp_path)
+    empty_list = tmp_path / "empty.txt"
+    empty_list.write_text("\n", encoding="utf-8")
+    monkeypatch.setattr(yt_batch_module, "check_dependencies", lambda: None)
+    monkeypatch.setattr(yt_batch_module, "check_python_runtime", lambda: None)
+    monkeypatch.setattr(yt_batch_module.sys, "argv", ["yt-batch.py", "-f", str(empty_list)])
+
+    with pytest.raises(SystemExit) as exc:
+        yt_batch_module.main()
+    assert exc.value.code == 1
+    out = capsys.readouterr().out
+    assert "brak utworów" in out
+    assert "usage:" not in out
+
+
+def test_main_without_any_input_prints_help(tmp_path, monkeypatch, capsys, yt_batch_module):
+    """Brak wejścia (fraza/-f/-i/-a) to nadal pełny help, także gdy podano samo --source."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(yt_batch_module, "check_dependencies", lambda: None)
+    monkeypatch.setattr(yt_batch_module, "check_python_runtime", lambda: None)
+    monkeypatch.setattr(yt_batch_module.sys, "argv", ["yt-batch.py", "--source", "yt"])
+
+    with pytest.raises(SystemExit) as exc:
+        yt_batch_module.main()
+    assert exc.value.code == 1
+    assert "usage:" in capsys.readouterr().out
+
+
+def test_main_default_source_is_ytm(tmp_path, monkeypatch, yt_batch_module):
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(yt_batch_module, "check_dependencies", lambda: None)
     monkeypatch.setattr(yt_batch_module, "check_python_runtime", lambda: None)
     monkeypatch.setattr(yt_batch_module, "get_demucs_device", lambda: None)

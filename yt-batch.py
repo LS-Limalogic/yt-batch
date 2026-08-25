@@ -33,10 +33,20 @@ SOURCE_MAP = {
     "yt":  "ytsearch1",        # YouTube
 }
 
+# Zamknięta lista z yt-dlp ("unsupported browser specified for cookies").
+COOKIE_BROWSERS = frozenset({
+    "brave", "chrome", "chromium", "edge", "firefox",
+    "opera", "safari", "vivaldi", "whale",
+})
+COOKIE_BROWSERS_HINT = ", ".join(sorted(COOKIE_BROWSERS))
+
 # Wspólne flagi dla yt-dlp (DRY). Szablon -o jest osobno, bo zależy od katalogu docelowego.
 YT_COMMON_FLAGS = [
     "--restrict-filenames",
-    "--no-mtime"  # Ważne: nie zmieniaj czasu modyfikacji pliku na czas uploadu filmu
+    "--no-mtime",  # Ważne: nie zmieniaj czasu modyfikacji pliku na czas uploadu filmu
+    # Bez skryptu EJS yt-dlp nie rozwiąże challenge'y JS (signature/n) i YouTube
+    # oddaje same obrazki albo 403. Wymaga runtime'u JS w PATH (deno/node).
+    "--remote-components", "ejs:github",
 ]
 
 # Pojedyncze pobranie całej playlisty (album): numeracja i osadzanie metadanych
@@ -61,12 +71,22 @@ PERMANENT_ERROR_PATTERNS = (
     "no video formats found",
     "is not a valid url",
     "unsupported url",
+    # Za stary yt-dlp nie zna np. --remote-components; ponawianie to tylko strata czasu.
+    # yt-dlp stoi na optparse, więc komunikat brzmi "no such option", nie argparse-owe
+    # "unrecognized arguments".
+    "no such option",
 )
 
 RETRY_HINT = (
-    "jeśli 403 wraca uporczywie, spróbuj --cookies-from-browser chrome "
-    "albo zainstaluj provider tokenów PO (bgutil-ytdlp-pot-provider)."
+    "jeśli 403 wraca uporczywie, dodaj --cookies-from-browser chrome (wtedy yt-dlp "
+    "użyje klienta web zamiast flaky android_vr) albo zainstaluj provider tokenów PO "
+    "(bgutil-ytdlp-pot-provider)."
 )
+
+
+def is_url(value):
+    """Czy wartość to URL (a nie fraza do wyszukania ani ścieżka)?"""
+    return str(value).startswith(("http://", "https://"))
 
 
 def yt_output_args(output_dir):
@@ -134,6 +154,46 @@ def run_with_retries(
                 f"({_first_error_line(e)}). Ponawiam za {delay:.0f}s..."
             )
             (sleep or _sleep)(delay)
+
+
+def is_cookie_browser_spec(value):
+    """
+    Czy wartość zaczyna się od znanej przeglądarki?
+
+    Z grammar yt-dlp BROWSER[+KEYRING][:PROFILE][::CONTAINER] sprawdzamy wyłącznie
+    człon BROWSER — reszta jest dowolna i to yt-dlp ją waliduje. Tyle wystarcza,
+    żeby odróżnić nazwę przeglądarki od połkniętego URL-a czy frazy.
+    """
+    name = re.split(r"[+:]", str(value).strip(), maxsplit=1)[0].strip().lower()
+    return name in COOKIE_BROWSERS
+
+
+def normalize_cookie_option(cookie_spec):
+    """
+    Rozdziel wartość --cookies-from-browser na (spec_dla_yt_dlp, odzyskane_zapytanie).
+
+    Flaga wymaga argumentu, więc `--cookies-from-browser URL` połyka URL i program
+    kończy się bez roboty. Nazwy przeglądarek to zamknięty zbiór, więc wszystko
+    spoza niego bezpiecznie wraca do kolejki jako zwykłe zapytanie.
+    """
+    if cookie_spec is None:
+        return None, None
+    s = str(cookie_spec).strip()
+    if not s:
+        return None, None
+    if is_cookie_browser_spec(s):
+        return s, None
+    return None, s
+
+
+def yt_dlp_base_cmd(cookies_from_browser=None):
+    """
+    Początek argv dla yt-dlp: binarka + cookies + YT_COMMON_FLAGS.
+
+    Każde wywołanie pobierające lub rozwijające formaty musi iść przez ten helper —
+    inaczej ominie --remote-components ejs:github i YouTube odda same obrazki albo 403.
+    """
+    return ["yt-dlp"] + yt_dlp_cookies_args(cookies_from_browser) + YT_COMMON_FLAGS
 
 
 def yt_dlp_cookies_args(cookies_from_browser):
@@ -551,23 +611,20 @@ def resolve_album_playlist_url(album_query, source, cookies_from_browser=None):
     Wyszukaj album i zwróć (url_playlisty, nazwa_podkatalogu) do wsadowego pobrania,
     albo None przy błędzie.
     """
-    if source == "ytm":
-        if not album_query.startswith(("http://", "https://")):
-            print("[ERROR] --source ytm nie obsługuje wyszukiwania tekstowego albumu.")
-            print("Podaj bezpośredni URL albumu/playlisty z music.youtube.com.")
-            return None
-        parsed = urlparse(album_query)
-        if parsed.netloc != "music.youtube.com":
-            print("[ERROR] --source ytm akceptuje tylko URL-e z music.youtube.com.")
-            return None
+    album_is_url = is_url(album_query)
+    if source == "ytm" and not album_is_url:
+        print("[ERROR] --source ytm nie obsługuje wyszukiwania tekstowego albumu.")
+        print("Podaj bezpośredni URL albumu/playlisty albo dodaj --source yt.")
+        return None
+
+    if album_is_url:
+        # URL playlisty jest jednoznaczny — bierzemy go wprost, bez oglądania na --source.
         fallback = _fallback_title_from_playlist_url(album_query)
         try:
             # -j na URL playlisty daje wiele linii JSON (1/utwór) i psuje json.loads; -J = jeden obiekt.
-            meta_cmd = (
-                ["yt-dlp"]
-                + yt_dlp_cookies_args(cookies_from_browser)
-                + ["-J", "--no-download", album_query]
-            )
+            meta_cmd = yt_dlp_base_cmd(cookies_from_browser) + [
+                "-J", "--no-download", album_query,
+            ]
             meta_json = run_with_retries(meta_cmd, label="Metadane albumu")
             meta = json.loads(meta_json)
             raw_title = format_album_folder_name(meta) or meta.get("title") or ""
@@ -584,11 +641,9 @@ def resolve_album_playlist_url(album_query, source, cookies_from_browser=None):
 
     print(f"   >>> Szukam albumu: '{album_query}' ({source})...")
     try:
-        meta_cmd = (
-            ["yt-dlp"]
-            + yt_dlp_cookies_args(cookies_from_browser)
-            + ["-j", "--no-download", search_term]
-        )
+        meta_cmd = yt_dlp_base_cmd(cookies_from_browser) + [
+            "-j", "--no-download", search_term,
+        ]
         meta_json = run_with_retries(meta_cmd, label="Wyszukiwanie albumu")
         meta = json.loads(meta_json)
     except Exception as e:
@@ -622,6 +677,9 @@ def resolve_album_playlist_url(album_query, source, cookies_from_browser=None):
 def count_playlist_entries(playlist_url, cookies_from_browser=None):
     """Liczba pozycji na playliście (szybki --flat-playlist) albo None, gdy nie da się ustalić."""
     try:
+        # Świadomie bez yt_dlp_base_cmd: --flat-playlist nie rozwija formatów, więc EJS
+        # nic tu nie daje, a jego pobranie potrafi paść — a wtedy cały except niżej
+        # zamienia znane `expected` na None i gubimy ostrzeżenie "Pobrano X/Y".
         meta_cmd = (
             ["yt-dlp"]
             + yt_dlp_cookies_args(cookies_from_browser)
@@ -651,9 +709,7 @@ def download_album_playlist(
     dest_dir.mkdir(parents=True, exist_ok=True)
     output_pattern = str(dest_dir / "%(playlist_index)02d_%(title)s.%(ext)s")
     archive_path = dest_dir / ".yt-dlp-archive.txt"
-    dl_cmd = [
-        "yt-dlp",
-    ] + yt_dlp_cookies_args(cookies_from_browser) + [
+    dl_cmd = yt_dlp_base_cmd(cookies_from_browser) + [
         "--ignore-errors",
         "-x", "--audio-format", "mp3",
         "-f", "bestaudio",
@@ -663,8 +719,6 @@ def download_album_playlist(
         "--embed-thumbnail",
         "--embed-metadata",
         "--parse-metadata", YT_ALBUM_PARSE_METADATA,
-        "--restrict-filenames",
-        "--no-mtime",
         playlist_url,
     ]
 
@@ -797,7 +851,7 @@ def process_local_file(input_path, index, total, args, output_dir):
 
 def process_item(query, index, total, args, output_dir):
     # Logika detekcji źródła
-    if not query.startswith(("http://", "https://")):
+    if not is_url(query):
         print(f"\n[{index}/{total}] Wyszukiwanie ({args.source}): '{query}'")
         if args.source == "ytm":
             dl_source = resolve_ytmusic_url(query)
@@ -807,12 +861,8 @@ def process_item(query, index, total, args, output_dir):
             search_prefix = SOURCE_MAP.get(args.source, "ytsearch1")
             dl_source = f"{search_prefix}:{query}"
     else:
+        # URL jest jednoznaczny — --source dotyczy tylko zapytań tekstowych.
         print(f"\n[{index}/{total}] URL: {query}")
-        if args.source == "ytm":
-            parsed = urlparse(query)
-            if parsed.netloc != "music.youtube.com":
-                print("[ERROR] --source ytm akceptuje tylko URL-e z music.youtube.com.")
-                return
         dl_source = query
 
     selected_model = resolve_model(args.model)
@@ -821,11 +871,9 @@ def process_item(query, index, total, args, output_dir):
     # 1. Pobieranie Metadanych (Nazwa pliku)
     try:
         name_cmd = (
-            ["yt-dlp"]
-            + yt_dlp_cookies_args(cookie_spec)
+            yt_dlp_base_cmd(cookie_spec)
             + ["--get-filename"]
             + yt_output_args(output_dir)
-            + YT_COMMON_FLAGS
             + ["-x", "--audio-format", "mp3", dl_source]
         )
         filename = run_with_retries(name_cmd, label="Metadane")
@@ -849,15 +897,13 @@ def process_item(query, index, total, args, output_dir):
         print(f"   >>> Pobieranie źródła ({args.quality}kbps)...")
         try:
             dl_cmd = (
-                ["yt-dlp"]
-                + yt_dlp_cookies_args(cookie_spec)
+                yt_dlp_base_cmd(cookie_spec)
                 + [
                     "-x", "--audio-format", "mp3",
                     "-f", "bestaudio",
                     "--audio-quality", "0",
                 ]
                 + yt_output_args(output_dir)
-                + YT_COMMON_FLAGS
                 + [dl_source]
             )
 
@@ -935,23 +981,42 @@ def main():
         "-a",
         "--album",
         action="append",
-        help="Album/playlista: ytm=wymaga URL z music.youtube.com; yt=nazwa do wyszukania. "
-        "Wsadowe pobranie playlisty, wyniki w podkatalogu --outdir. Można podać wielokrotnie.",
+        help="Album/playlista: URL playlisty (dowolny serwis YouTube) albo — z --source yt "
+        "— nazwa albumu do wyszukania. Wsadowe pobranie playlisty, wyniki w podkatalogu "
+        "--outdir. Można podać wielokrotnie.",
     )
     parser.add_argument(
         "--source",
         default="ytm",
         choices=["ytm", "yt"],
-        help="Źródło: ytm=YouTube Music search (domyślne), yt=YouTube search",
+        help="Źródło wyszukiwania tekstowego: ytm=YouTube Music (domyślne), yt=YouTube. "
+        "URL-e są brane wprost, niezależnie od tej flagi.",
     )
     parser.add_argument(
         "--cookies-from-browser",
         metavar="BROWSER",
         default=None,
-        help="Przekazuje do yt-dlp --cookies-from-browser (np. chrome). Pomaga przy age-gate, gdy jesteś zalogowany w tej przeglądarce.",
+        help="Przekazuje do yt-dlp --cookies-from-browser. Wymaga nazwy przeglądarki: "
+        + COOKIE_BROWSERS_HINT
+        + " (opcjonalnie :Profil). Główny sposób na HTTP 403: z cookies yt-dlp używa "
+        "klienta web zamiast flaky android_vr. Pomaga też przy age-gate.",
     )
 
     args = parser.parse_args()
+
+    args.cookies_from_browser, stray_cookie_value = normalize_cookie_option(
+        args.cookies_from_browser
+    )
+    if stray_cookie_value:
+        print(
+            f"[WARN] --cookies-from-browser wymaga nazwy przeglądarki "
+            f"({COOKIE_BROWSERS_HINT}), a dostało '{stray_cookie_value}'."
+        )
+        print(
+            "[WARN] Traktuję tę wartość jako utwór i pomijam cookies. "
+            "Poprawnie: --cookies-from-browser safari 'URL'"
+        )
+        args.query.append(stray_cookie_value)
 
     out_path = Path(args.outdir)
 
@@ -998,7 +1063,16 @@ def main():
                 album_jobs.append(resolved)
 
     if not queue and not album_jobs:
-        parser.print_help()
+        # Nie podano żadnego wejścia -> pełny help. Wejście było, ale nic z niego nie
+        # wyszło (pusty plik, folder bez audio, album nierozwiązany) -> jedno zdanie.
+        if not (args.query or args.file or args.folder or args.album):
+            parser.print_help()
+        else:
+            print(
+                "Błąd: brak utworów do przetworzenia. Podaj frazę, URL lub ścieżkę "
+                "jako argument albo użyj -f/--file, -i/--folder, -a/--album."
+            )
+            print("Pełna lista opcji: yt-batch.py -h")
         sys.exit(1)
 
     # Katalog wyjściowy tworzymy dopiero po walidacji — błędne wywołanie nie może

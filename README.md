@@ -11,6 +11,7 @@ System musi posiadać zainstalowane w `$PATH`:
 3. **yt-dlp** (Pobieranie źródeł)
 4. **Demucs** (`pip install demucs`)
 5. **ytmusicapi** (dla źródła `--source ytm`)
+6. **deno** lub **node** — runtime JS, którym `yt-dlp` rozwiązuje challenge'e YouTube (bez tego YouTube oddaje same obrazki albo HTTP 403)
 
 ### Akceleracja Sprzętowa (Opcjonalne, ale zalecane)
 
@@ -112,7 +113,8 @@ python3 yt-batch.py -i ./moje-pliki-audio
 | `--file`          | `-f`  | Plik .txt z listą linków/fraz                                      | -         |
 | `--folder`        | `-i`  | Folder z plikami audio (mp3, opus, m4a, wav, flac itd.)            | -         |
 | `--album`         | `-a`  | Album/playlista (patrz [Tryb albumu](#tryb-albumu)). Można podać wielokrotnie. | -         |
-| `--source`        |       | Źródło: `ytm`=YouTube Music search, `yt`=YouTube search            | ytm       |
+| `--source`        |       | Źródło **wyszukiwania tekstowego**: `ytm`=YouTube Music, `yt`=YouTube. URL-e idą wprost, niezależnie od tej flagi. | ytm       |
+| `--cookies-from-browser` |  | Cookies z przeglądarki dla `yt-dlp` (`chrome`, `firefox:Profil`, …). Główny sposób na HTTP 403. | -         |
 
 ## Mapa Modeli (-m)
 
@@ -123,7 +125,8 @@ python3 yt-batch.py -i ./moje-pliki-audio
 
 ## Tryb albumu
 
-- **`--source ytm`:** podaj **URL** playlisty lub albumu z `music.youtube.com` (wyszukiwanie samej frazy tekstowej albumu nie jest obsługiwane).
+- **URL playlisty/albumu** (dowolny — `music.youtube.com`, `youtube.com`) działa zawsze, bez ustawiania `--source`. Podaj link z `list=`: skrypt nie weryfikuje kształtu URL-a, a pojedynczy `watch?v=` przejdzie jako „album” z jednym utworem, którego plik dostanie prefiks `NA_` zamiast numeru (`%(playlist_index)02d` nie ma czego wypełnić). Do pojedynczych utworów użyj zwykłego argumentu, nie `-a`.
+- **`--source ytm`** (domyślne) nie obsługuje wyszukiwania albumu po nazwie — do tego podaj `--source yt`.
 - **`--source yt`:** podaj **nazwę albumu** — z pierwszego wyniku wyszukiwania wybierana jest playlista YouTube Music powiązana z albumem.
 - Cała playlista jest pobierana **jednym** wywołaniem `yt-dlp` (numeracja plików `01_…`, osadzanie miniatury i metadanych), następnie każdy utwór przechodzi przez Demucs.
 - Utwory, które padły na błąd przejściowy (typowo HTTP 403), są dobierane w **kolejnych przebiegach** (do 3). Dzięki `--download-archive` kolejny przebieg pomija to, co już się udało. Jeśli po wszystkich przebiegach czegoś brakuje, skrypt wypisuje ostrzeżenie `Pobrano X/Y utworów` — braki nie przechodzą po cichu.
@@ -157,7 +160,9 @@ Demucs korzysta z ffmpeg i obsługuje m.in.: **mp3**, **opus**, **m4a**, **m4b**
 
 ## 🐛 Rozwiązywanie problemów
 
-- **`HTTP Error 403: Forbidden` przy pobieraniu:** znany problem YouTube — jedyny klient odtwarzacza działający bez tokenu PO (`android_vr`) sporadycznie odrzuca żądanie. Skrypt sam ponawia wywołanie (do 4 prób), więc zwykle wystarczy poczekać. Gdy 403 wraca uporczywie: użyj `--cookies-from-browser chrome` albo zainstaluj provider tokenów PO ([`bgutil-ytdlp-pot-provider`](https://github.com/Brainicism/bgutil-ytdlp-pot-provider)). Podnoszenie `--retries` w samym `yt-dlp` tu nie pomaga — ponowić trzeba całe wywołanie, żeby wymusić świeżą ekstrakcję adresów strumienia.
+- **Tryb albumu kończy się `Pobrano 0/N utworów`:** najpierw sprawdź wersję `yt-dlp` (`yt-dlp --version`) i runtime JS. Pobieranie playlisty idzie przez `--ignore-errors`, więc yt-dlp nie przerywa pracy na błędzie — komunikat mówi „błąd sieci” nawet wtedy, gdy realną przyczyną jest za stary `yt-dlp` (`no such option: --remote-components`) albo brak `deno`/`node`.
+- **`HTTP Error 403: Forbidden` przy pobieraniu:** znany problem YouTube — jedyny klient odtwarzacza działający bez tokenu PO (`android_vr`) sporadycznie odrzuca żądanie. Skrypt sam ponawia wywołanie (do 4 prób), ale **najskuteczniejsze jest `--cookies-from-browser chrome`** — z cookies `yt-dlp` używa klienta `web` zamiast flaky `android_vr` i 403 znika. Alternatywnie zainstaluj provider tokenów PO ([`bgutil-ytdlp-pot-provider`](https://github.com/Brainicism/bgutil-ytdlp-pot-provider)). Podnoszenie `--retries` w samym `yt-dlp` tu nie pomaga — ponowić trzeba całe wywołanie, żeby wymusić świeżą ekstrakcję adresów strumienia.
+- **`Only images are available for download` / `Signature solving failed`:** `yt-dlp` nie ma czym rozwiązać challenge'y JS. Zainstaluj runtime JS (`brew install deno`). Skrypt sam dokłada `--remote-components ejs:github`, więc skrypt solvera pobiera się automatycznie z repozytorium `yt-dlp`.
 - **Błąd ffmpeg not found:** Zainstaluj ffmpeg w systemie, nie przez pip.
 - **Błąd CUDA out of memory:** Użyj modelu 3 (mdx_extra_q) lub ustaw zmienną środowiskową `PYTORCH_NO_CUDA_MEMORY_CACHING=1`.
 - **Prędkość:** Na samym CPU proces trwa ok. 1-2 minuty na utwór. Na GPU/Metal - sekundy.
